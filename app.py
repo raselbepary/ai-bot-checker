@@ -22,6 +22,7 @@ Environment variables
 No extra packages needed: uses only Python's standard library.
 """
 import base64
+import glob
 import gzip
 import io
 import hashlib
@@ -31,6 +32,11 @@ import json
 import os
 import re
 import secrets
+import select
+import shutil
+import socketserver
+import subprocess
+import tempfile
 import socket
 import ssl
 import sys
@@ -1416,6 +1422,233 @@ def delete_project(pid):
     return {"ok": True}, 200
 
 
+# ---------------------------------------------------------------- JavaScript gap (headless browser)
+RENDER_LOCK = threading.Semaphore(1)
+_PROXY = {"port": None}
+_PROXY_LOCK = threading.Lock()
+ALLOWED_PORTS = {80, 443, 8080, 8443}
+
+
+def _resolve_public(host, port):
+    """Resolve host and return one address to connect to; refuse private or reserved ones."""
+    if not ALLOW_PRIVATE and port not in ALLOWED_PORTS:
+        raise BlockedURL(f"Port {port} is not allowed.")
+    infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    ips = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped:
+            ip = mapped
+        if not ALLOW_PRIVATE and not ip.is_global:
+            raise BlockedURL(f"{host} points to a private or reserved address.")
+        ips.append(str(ip))
+    if not ips:
+        raise BlockedURL(f"Could not resolve {host}.")
+    return ips[0]
+
+
+class _FilterProxy(socketserver.BaseRequestHandler):
+    """A tiny HTTP proxy for the headless browser: every request goes through check of the destination address."""
+
+    def handle(self):
+        c = self.request
+        c.settimeout(30)
+        data = b""
+        try:
+            while b"\r\n\r\n" not in data and len(data) < 65536:
+                chunk = c.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+        except OSError:
+            return
+        head, _, rest = data.partition(b"\r\n\r\n")
+        lines = head.decode("latin-1").split("\r\n")
+        try:
+            method, target, version = lines[0].split(" ", 2)
+        except ValueError:
+            return
+        try:
+            if method.upper() == "CONNECT":
+                host, _, port = target.rpartition(":")
+                host = host.strip("[]")
+                port = int(port or 443)
+                up = socket.create_connection((_resolve_public(host, port), port), timeout=20)
+                c.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                if rest:
+                    up.sendall(rest)
+            else:
+                p = urllib.parse.urlsplit(target)
+                if p.scheme != "http" or not p.hostname:
+                    raise BlockedURL("Unsupported request.")
+                port = p.port or 80
+                up = socket.create_connection((_resolve_public(p.hostname, port), port), timeout=20)
+                path = (p.path or "/") + ("?" + p.query if p.query else "")
+                hdrs = [h for h in lines[1:] if h and not h.lower().startswith(("proxy-connection:", "connection:", "keep-alive:"))]
+                up.sendall((f"{method} {path} {version}\r\n" + "\r\n".join(hdrs) + "\r\nConnection: close\r\n\r\n").encode("latin-1") + rest)
+            self._pipe(c, up)
+        except (BlockedURL, OSError, ValueError):
+            try:
+                c.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+
+    @staticmethod
+    def _pipe(a, b):
+        try:
+            while True:
+                r, _, x = select.select([a, b], [], [a, b], 30)
+                if x or not r:
+                    return
+                for s in r:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        return
+                    (b if s is a else a).sendall(chunk)
+        except OSError:
+            return
+        finally:
+            try:
+                b.close()
+            except OSError:
+                pass
+
+
+def _ensure_proxy():
+    with _PROXY_LOCK:
+        if not _PROXY["port"]:
+            class _Server(socketserver.ThreadingTCPServer):
+                daemon_threads = True
+                allow_reuse_address = True
+            srv = _Server(("127.0.0.1", 0), _FilterProxy)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            _PROXY["port"] = srv.server_address[1]
+        return _PROXY["port"]
+
+
+def _chrome_path():
+    p = os.environ.get("CHROME_PATH")
+    if p and os.path.exists(p):
+        return p
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
+    for pattern in ("chromium_headless_shell-*/*/headless_shell", "chromium_headless_shell-*/*/chrome-headless-shell"):
+        found = sorted(glob.glob(os.path.join(base, pattern)))
+        if found:
+            return found[-1]
+    for name in ("chrome-headless-shell", "headless_shell", "chromium", "chromium-browser", "google-chrome"):
+        w = shutil.which(name)
+        if w:
+            return w
+    return None
+
+
+def render_page(url, wait_ms=8000):
+    chrome = _chrome_path()
+    if not chrome:
+        return None, "The headless browser is not installed on this server."
+    if not RENDER_LOCK.acquire(timeout=60):
+        return None, "Another page is being rendered right now. Try again in a minute."
+    tmp = tempfile.mkdtemp(prefix="abvc-chrome-")
+    try:
+        port = _ensure_proxy()
+        cmd = [chrome, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
+               "--disable-extensions", "--disable-background-networking", "--disable-sync", "--mute-audio", "--hide-scrollbars",
+               "--disable-crash-reporter", f"--user-data-dir={tmp}", f"--user-agent={CHROME_UA}", "--window-size=1366,3000",
+               f"--proxy-server=http://127.0.0.1:{port}", "--proxy-bypass-list=<-loopback>",
+               f"--virtual-time-budget={wait_ms}", "--dump-dom", url]
+        if "headless" not in os.path.basename(chrome):
+            cmd.insert(1, "--headless=new")
+        t0 = time.time()
+        proc = subprocess.run(cmd, capture_output=True, timeout=75, env=dict(os.environ, HOME=tmp))
+        out = proc.stdout.decode("utf-8", errors="replace")
+        if not out.strip():
+            return None, "The browser returned no content for this page."
+        return {"html": out[:MAX_BYTES], "ms": int((time.time() - t0) * 1000)}, None
+    except subprocess.TimeoutExpired:
+        return None, "The page took too long to load in the browser (over 75 seconds)."
+    except OSError as e:
+        return None, f"The headless browser could not start: {e}"
+    finally:
+        RENDER_LOCK.release()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ntext(s):
+    return re.sub(r"\s+", " ", s or "").strip().lower()
+
+
+def _page_bits(html, base_url):
+    pe = PageExtractor()
+    try:
+        pe.feed(html)
+    except Exception:
+        pass
+    text = pe.text()
+    host = _bare_host(base_url)
+    links = set()
+    for h in HREF_RE.findall(html):
+        u = urllib.parse.urljoin(base_url, h.strip()).split("#")[0]
+        if u.startswith(("http://", "https://")) and _bare_host(u) == host:
+            links.add(u.rstrip("/") or u)
+    return {"text": text, "words": _words(text), "headings": [x["text"] for x in pe.headings], "links": links,
+            "jsonld": len(JSONLD_RE.findall(html)), "title": re.sub(r"\s+", " ", pe.title).strip(),
+            "desc": pe.meta.get("description", ""), "counters": [c["shown"] for c in find_counters(html)]}
+
+
+def js_gap(url):
+    try:
+        url = _normalize_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    raw_r = http_get(url, CHROME_UA)
+    if raw_r["error"]:
+        return {"error": f"Could not fetch the page: {raw_r['error']}"}, 502
+    base = raw_r["final_url"] or url
+    rendered, err = render_page(base)
+    if err:
+        return {"error": err}, 503
+    raw = _page_bits(raw_r["html"] or "", base)
+    ren = _page_bits(rendered["html"], base)
+    raw_norm, ren_norm = _ntext(raw["text"]), _ntext(ren["text"])
+    js_only, seen = [], set()
+    for line in ren["text"].split("\n"):
+        n = _ntext(line)
+        if not n or n in seen or (len(n) < 12 and not re.search(r"\d", n)):
+            continue
+        seen.add(n)
+        if n not in raw_norm:
+            js_only.append(line.strip()[:400])
+    removed, seen = [], set()
+    for line in raw["text"].split("\n"):
+        n = _ntext(line)
+        if not n or n in seen or len(n) < 12:
+            continue
+        seen.add(n)
+        if n not in ren_norm:
+            removed.append(line.strip()[:400])
+    norm_num = lambda x: x.rstrip(",.").replace(",", "").replace("$", "")
+    raw_nums = {norm_num(x) for x in NUMBER_RE.findall(raw["text"])}
+    nums, seen = [], set()
+    for m in NUMBER_RE.finditer(ren["text"]):
+        v = norm_num(m.group(0))
+        if len(v.replace(".", "")) < 2 or v in raw_nums or v in seen:
+            continue
+        seen.add(v)
+        a, b = max(0, m.start() - 50), min(len(ren["text"]), m.end() + 50)
+        nums.append({"number": m.group(0).rstrip(",."), "context": re.sub(r"\s+", " ", ren["text"][a:b]).strip()})
+    visible = 100 if not ren["words"] else round(100 * min(1, raw["words"] / ren["words"]))
+    return {"url": base, "status": raw_r["status"], "render_ms": rendered["ms"], "visible_pct": visible,
+            "raw": {"words": raw["words"], "headings": len(raw["headings"]), "links": len(raw["links"]), "jsonld": raw["jsonld"],
+                    "title": raw["title"], "desc": raw["desc"], "counters": raw["counters"]},
+            "rendered": {"words": ren["words"], "headings": len(ren["headings"]), "links": len(ren["links"]), "jsonld": ren["jsonld"],
+                         "title": ren["title"], "desc": ren["desc"], "counters": ren["counters"]},
+            "js_only_text": js_only[:150], "js_only_numbers": nums[:60],
+            "js_only_headings": [h for h in ren["headings"] if _ntext(h) not in raw_norm][:40],
+            "js_only_links": sorted(ren["links"] - raw["links"])[:60], "removed_text": removed[:80],
+            "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}, 200
+
+
 # ---------------------------------------------------------------- AI readiness review
 READY_SKIP = {"script", "style", "noscript", "template", "svg", "iframe", "head", "object", "canvas", "nav", "footer", "aside", "form"}
 GREETING_RE = re.compile(r"^(welcome to|in today's|are you looking|looking for|have you ever|thank you for|hello|hi there)", re.I)
@@ -2742,6 +2975,9 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/jsgap":
+                body, code = js_gap(payload.get("url", ""))
+                return self._json(body, code)
             if path == "/api/readiness":
                 body, code = review_readiness(payload.get("url", ""))
                 return self._json(body, code)
