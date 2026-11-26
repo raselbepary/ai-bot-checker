@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', settings: 'Settings'};
+const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite'].includes(p));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -60,6 +60,7 @@ function applySettings(s){
     : 'Saving is unavailable because the server has no writable storage. You can still paste a key on the AI test page for one test.';
   $('#models').value = currentModels().join('\n');
   renderModelPicks();
+  renderCiteModels();
 }
 function renderModelPicks(){
   $('#modelPick').innerHTML = currentModels().map((m, i) =>
@@ -361,7 +362,7 @@ $('#askBtn').onclick = async () => {
         let fetchInfo = '';
         let fetchCount = 0;
         if (r.mode === 'fetch'){
-          const stu = (r.usage && r.usage.server_tool_use) || {};
+          const stu = Object.assign({}, (r.usage && r.usage.server_tool_use) || {}, (r.usage && r.usage.server_tool_use_details) || {});
           fetchCount = Object.entries(stu).filter(([k]) => k.includes('fetch')).reduce((a, [, v]) => a + (Number(v) || 0), 0);
           fetchInfo = `, ${r.engine} engine, ${fetchCount ? `${fetchCount} page ${fetchCount === 1 ? 'fetch' : 'fetches'} recorded by OpenRouter` : 'no fetch recorded'}`;
         }
@@ -685,6 +686,187 @@ async function runLlmsGen(){
   finally{ $('#llmsGenBtn').disabled = false; }
 }
 
+/* ---------------------------------------------------------------- AI citations */
+let CITE = null, citeTimer = null;
+const CITE_FIELDS = ['citeDomain', 'citeBrand', 'citeComp', 'citePrompts', 'citeEngine', 'citeLocation'];
+function renderCiteModels(){
+  const box = $('#citeModels'); if (!box) return;
+  const prev = new Set($$('.cite-model:checked').map(c => c.value));
+  const list = currentModels();
+  box.innerHTML = list.map((m, i) => `<label><input type="checkbox" class="cite-model" value="${esc(m)}" ${(prev.size ? prev.has(m) : i < 3) ? 'checked' : ''}> ${esc(m)}</label>`).join('');
+  $$('.cite-model').forEach(c => c.onchange = citeEstimate);
+  citeEstimate();
+}
+function citeLines(){ return $('#citePrompts').value.split('\n').map(s => s.trim()).filter(Boolean); }
+function citeEstimate(){
+  const q = Math.min(citeLines().length, 10), m = Math.min($$('.cite-model:checked').length, 6);
+  $('#citeEstimate').textContent = q && m
+    ? `This runs ${plural(q, 'question')} × ${plural(m, 'model')} = ${plural(q * m, 'answer')}. Each answer costs the model's usage plus its searches (roughly $0.005 to $0.02 per search with Exa, Parallel or Perplexity; Firecrawl costs more; native search is priced by the model provider). Each model may search up to 3 times per answer.`
+    : 'Add questions and pick models to see how many answers this will run.';
+}
+CITE_FIELDS.forEach(id => $('#' + id).addEventListener('input', () => {
+  const form = {}; CITE_FIELDS.forEach(f => form[f] = $('#' + f).value); store('abvc_cite_form', JSON.stringify(form)); citeEstimate();
+}));
+$('#citeBtn').onclick = startCite;
+$('#citeStop').onclick = async () => {
+  if (!CITE) return;
+  try{ await post('/api/cite/stop', {id: CITE.id}); }catch(e){}
+  $('#citeStatus').textContent = 'Stopping after the answers in progress…';
+};
+$('#citeHistory').onchange = () => { const id = $('#citeHistory').value; if (id) pollCite(id); };
+$('#citeCsv').onclick = citeCsv;
+
+async function startCite(){
+  if (SETTINGS.key_source === 'none'){ $('#citeStatus').innerHTML = 'Add an OpenRouter key first, in <a class="links" href="#/settings">Settings</a>.'; return; }
+  const prompts = citeLines();
+  const models = $$('.cite-model:checked').map(c => c.value);
+  if (!$('#citeDomain').value.trim()){ $('#citeStatus').textContent = "Enter your site's domain."; return; }
+  if (!prompts.length){ $('#citeStatus').textContent = 'Add at least one question.'; return; }
+  if (prompts.length > 10){ $('#citeStatus').textContent = 'Use up to 10 questions per test.'; return; }
+  if (!models.length || models.length > 6){ $('#citeStatus').textContent = 'Pick between 1 and 6 models.'; return; }
+  const loc = $('#citeLocation').value.split(',').map(s => s.trim());
+  const location = loc[0] ? {city: loc[0] || '', region: loc[1] || '', country: loc[2] || ''} : null;
+  $('#citeBtn').disabled = true;
+  $('#citeStatus').textContent = 'Starting…';
+  try{
+    const d = await post('/api/cite/start', {domain: $('#citeDomain').value, brands: $('#citeBrand').value, competitors: $('#citeComp').value,
+      prompts, models, engine: $('#citeEngine').value, location});
+    if (d.error){ $('#citeStatus').textContent = d.error; $('#citeBtn').disabled = false; return; }
+    pollCite(d.id);
+  }catch(e){ $('#citeStatus').textContent = 'Could not start the test: ' + e.message; $('#citeBtn').disabled = false; }
+}
+
+async function pollCite(id){
+  clearTimeout(citeTimer);
+  try{
+    const d = await api('/api/cite/status?id=' + encodeURIComponent(id));
+    if (d.error){ $('#citeStatus').textContent = d.error; $('#citeBtn').disabled = false; return; }
+    CITE = d; store('abvc_cite', id);
+    renderCite();
+    if (d.status === 'running') citeTimer = setTimeout(() => pollCite(id), 2500);
+    else loadCiteHistory();
+  }catch(e){
+    $('#citeStatus').textContent = 'Lost contact with the test, retrying… (' + e.message + ')';
+    citeTimer = setTimeout(() => pollCite(id), 5000);
+  }
+}
+
+function hostOf(u){ try{ return new URL(u).hostname.toLowerCase().replace(/^www\./, ''); }catch(e){ return ''; } }
+function domMatch(h, d){ return !!h && !!d && (h === d || h.endsWith('.' + d)); }
+function compDomains(){ return (CITE.results.find(r => r.competitors) || {competitors: []}).competitors.map(c => c.label); }
+function citeStatusOf(r){
+  if (r.error) return 'error';
+  if (r.brand.cited) return 'cited';
+  if (r.brand.mentioned) return 'mentioned';
+  return 'none';
+}
+function citeChip(r){
+  if (!r) return '<span class="chip na">…</span>';
+  const s = citeStatusOf(r);
+  if (s === 'error') return `<span class="chip bad" title="${esc(r.error)}">Error</span>`;
+  if (s === 'cited') return `<span class="chip ok">Cited #${r.brand.rank}${r.brand.mentioned ? ' + named' : ''}</span>`;
+  if (s === 'mentioned') return '<span class="chip warn">Named, not cited</span>';
+  return '<span class="chip na">Not found</span>';
+}
+
+function renderCite(){
+  const d = CITE;
+  const running = d.status === 'running';
+  $('#citeBtn').disabled = running;
+  $('#citeStop').classList.toggle('hidden', !running);
+  $('#citeProgress').classList.toggle('hidden', !running);
+  $('#citeBar').style.width = d.total ? `${Math.round(d.done / d.total * 100)}%` : '5%';
+  const engineNote = `${d.engine} search${d.location ? ', searching from ' + Object.values(d.location).join(', ') : ''}`;
+  $('#citeStatus').textContent = d.status === 'failed' ? `Test failed: ${d.error}`
+    : running ? `Asking: ${d.done} of ${d.total} answers done for ${d.domain} (${engineNote})…`
+    : `${d.status === 'stopped' ? 'Stopped' : 'Finished'}: ${d.done} of ${d.total} answers for ${d.domain}, ${engineNote}, started ${d.started_at}.`;
+  $('#citeResults').classList.toggle('hidden', !d.results.length);
+  if (!d.results.length) return;
+
+  const ok = d.results.filter(r => !r.error);
+  const errors = d.results.length - ok.length;
+  const cited = ok.filter(r => r.brand.cited), named = ok.filter(r => r.brand.mentioned);
+  const pct = (n, t) => t ? Math.round(n / t * 100) + '%' : '–';
+  const ranks = cited.map(r => r.brand.rank);
+  const avg = ranks.length ? (ranks.reduce((a, b) => a + b, 0) / ranks.length).toFixed(1) : null;
+  const noSearch = ok.filter(r => !r.searches && !(r.citations || []).length).length;
+  $('#citeSummary').innerHTML = `
+    <span class="chip ${cited.length ? 'ok' : 'bad'}">Cited in ${cited.length} of ${ok.length} answers (${pct(cited.length, ok.length)})</span>
+    <span class="chip ${named.length ? 'ok' : 'warn'}">Named in ${named.length} of ${ok.length} (${pct(named.length, ok.length)})</span>
+    ${avg ? `<span class="chip na">Average position when cited: #${avg}</span>` : ''}
+    ${errors ? `<span class="chip bad">${plural(errors, 'answer')} failed</span>` : ''}
+    ${noSearch ? `<span class="chip warn" title="No search or sources were recorded for these answers">${noSearch} answered without searching</span>` : ''}`;
+
+  const rows = [{label: `${d.domain} (you)`, get: r => r.brand}].concat(
+    compDomains().map((label, i) => ({label, get: r => (r.competitors || [])[i] || {}})));
+  $('#citeSov').innerHTML = `<thead><tr><th>Brand</th><th>Named in answers</th><th>Cited as a source</th><th>Best position</th></tr></thead><tbody>${
+    rows.map(row => {
+      const st = ok.map(row.get);
+      const n = st.filter(s => s.mentioned).length, c = st.filter(s => s.cited).length;
+      const best = st.filter(s => s.rank).map(s => s.rank).sort((a, b) => a - b)[0];
+      return `<tr><td><strong>${esc(row.label)}</strong></td><td>${n} (${pct(n, ok.length)})</td><td>${c} (${pct(c, ok.length)})</td><td>${best ? '#' + best : '–'}</td></tr>`;
+    }).join('')}</tbody>`;
+
+  const idx = new Map(d.results.map((r, i) => [r.prompt + '\u0000' + r.model, i]));
+  $('#citeMatrix').innerHTML = `<thead><tr><th>Question</th>${d.models.map(m => `<th>${esc(m)}</th>`).join('')}</tr></thead><tbody>${
+    d.prompts.map(p => `<tr><td>${esc(p)}</td>${d.models.map(m => {
+      const i = idx.get(p + '\u0000' + m);
+      return `<td>${i === undefined ? citeChip(null) : `<button class="cell" data-ans="${i}">${citeChip(d.results[i])}</button>`}</td>`;
+    }).join('')}</tr>`).join('')}</tbody>`;
+  $$('#citeMatrix [data-ans]').forEach(b => b.onclick = () => {
+    const el = $('#cans-' + b.dataset.ans); if (!el) return;
+    el.open = true; el.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
+
+  const pIdx = new Map(d.prompts.map((x, k) => [x, k])), mIdx = new Map(d.models.map((x, k) => [x, k]));
+  const order = d.results.map((r, k) => k).sort((x, y) => (pIdx.get(d.results[x].prompt) - pIdx.get(d.results[y].prompt)) || (mIdx.get(d.results[x].model) - mIdx.get(d.results[y].model)));
+  $('#citeAnswers').innerHTML = order.map(i => {
+    const r = d.results[i];
+    const srcs = (r.citations || []).length ? r.citations : (r.text_links || []).map(u => ({url: u, title: ''}));
+    return `<details class="bot" id="cans-${i}">
+      <summary><span>${esc(r.model)}</span>${citeChip(r)}<span class="note" style="margin:0;font-weight:400">${esc(r.prompt)}</span></summary>
+      <div class="dbody">
+        ${r.error ? `<p class="chip bad" style="white-space:normal">${esc(r.error)}</p>` : `
+        <div class="note" style="margin:0 0 8px">${r.searches ? plural(r.searches, 'search') + ' recorded by OpenRouter' : 'No search recorded by OpenRouter'}, ${(r.ms / 1000).toFixed(1)} s${r.tokens ? ', ' + r.tokens.toLocaleString() + ' tokens' : ''}</div>
+        <div class="answertext">${esc(r.answer) || '(empty answer)'}</div>
+        <div class="subhead">Sources (${srcs.length})</div>
+        ${srcs.length ? `<ol class="sources">${srcs.map(c => {
+          const h = hostOf(c.url);
+          const mine = domMatch(h, d.domain);
+          const comp = !mine && (r.competitors || []).some(x => x.domain && domMatch(h, x.domain));
+          return `<li class="${mine ? 'mine' : comp ? 'comp' : ''}"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title || c.url)}</a> <span class="sub" style="display:inline">${esc(h)}</span></li>`;
+        }).join('')}</ol>` : '<div class="note" style="margin:0">No sources were returned.</div>'}`}
+      </div></details>`;
+  }).join('');
+}
+
+function citeCsv(){
+  if (!CITE) return;
+  const comps = compDomains();
+  const cols = ['question', 'model', 'result', 'cited_position', 'named', 'searches', ...comps.map(c => `competitor: ${c}`), 'sources'];
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [cols.map(q).join(',')].concat(CITE.results.map(r => [r.prompt, r.model,
+    r.error ? 'error: ' + r.error : citeStatusOf(r), r.brand && r.brand.rank || '', r.brand && r.brand.mentioned ? 'yes' : 'no', r.searches || 0,
+    ...comps.map((c, i) => { const x = (r.competitors || [])[i]; return !x ? '' : x.cited ? `cited #${x.rank}` : x.mentioned ? 'named' : 'no'; }),
+    (r.hosts || []).join(' ')].map(q).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ai-citations-${CITE.domain}-${(CITE.started_at || '').slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function loadCiteHistory(){
+  try{
+    const d = await api('/api/cite/list');
+    const cur = CITE ? CITE.id : '';
+    const items = d.runs || [];
+    $('#citeHistory').innerHTML = (items.length ? '<option value="">Choose a test…</option>' : '<option value="">None yet</option>') + items.map(s =>
+      `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.domain)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total}${s.status === 'running' ? ' (running)' : ''}</option>`).join('');
+  }catch(e){}
+}
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -712,6 +894,14 @@ async function init(){
   const lastUrl = load('abvc_url') || load('abvc_scan_url') || '';
   $('#accessUrl').value = load('abvc_access_url') || lastUrl;
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
+  try{
+    const form = JSON.parse(load('abvc_cite_form') || '{}');
+    CITE_FIELDS.forEach(f => { if (form[f] !== undefined) $('#' + f).value = form[f]; });
+  }catch(e){}
+  citeEstimate();
+  loadCiteHistory();
+  const cid = load('abvc_cite');
+  if (cid) pollCite(cid);
   $('#signout').classList.toggle('hidden', !s.auth);
   applySettings(s);
 }
