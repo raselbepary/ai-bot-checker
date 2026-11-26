@@ -740,6 +740,246 @@ def run_check(url, bot_ids):
     return {"url": url, "robots": robots_info, "results": results, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
+# ---------------------------------------------------------------- AI access
+AI_AGENTS = [
+    ("GPTBot", "OpenAI", "Collects training data for OpenAI models", "gptbot"),
+    ("OAI-SearchBot", "OpenAI", "Builds ChatGPT search results", "oai-search"),
+    ("ChatGPT-User", "OpenAI", "Opens pages when a ChatGPT user asks", "chatgpt-user"),
+    ("ClaudeBot", "Anthropic", "Collects training data for Claude", "claudebot"),
+    ("Claude-SearchBot", "Anthropic", "Builds Claude search results", "claude-search"),
+    ("Claude-User", "Anthropic", "Opens pages when a Claude user asks", "claude-user"),
+    ("PerplexityBot", "Perplexity", "Builds Perplexity search results", "perplexitybot"),
+    ("Perplexity-User", "Perplexity", "Opens pages when a Perplexity user asks", "perplexity-user"),
+    ("Googlebot", "Google", "Google Search, including AI Overviews", "googlebot"),
+    ("Google-Extended", "Google", "Controls use in Gemini models; a robots.txt rule only, not a separate crawler", None),
+    ("Bingbot", "Microsoft", "Bing search and Microsoft Copilot", "bingbot"),
+    ("Applebot", "Apple", "Siri and Spotlight search", "applebot"),
+    ("Applebot-Extended", "Apple", "Controls use in Apple's AI training; a robots.txt rule only", None),
+    ("CCBot", "Common Crawl", "Open web dataset used by many AI labs", "ccbot"),
+    ("meta-externalagent", "Meta", "Meta AI training and features", "meta"),
+    ("Bytespider", "ByteDance", "ByteDance crawler", "bytespider"),
+    ("Amazonbot", "Amazon", "Alexa and other Amazon services; robots.txt rule checked only", None),
+]
+META_ROBOTS_RE = re.compile(r'<meta\b[^>]*name\s*=\s*["\']robots["\'][^>]*content\s*=\s*["\']([^"\']*)', re.I)
+
+
+def _normalize_url(url):
+    url = (url or "").strip()
+    if not url:
+        raise BlockedURL("Enter a URL.")
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    check_public_url(url)
+    return url
+
+
+def _is_challenge(html_text):
+    low = (html_text or "")[:20000].lower()
+    return "cf-chl" in low or "just a moment..." in low or "attention required! | cloudflare" in low
+
+
+def check_access(url):
+    try:
+        url = _normalize_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    rp, robots = load_robots(url)
+    browser = http_get(url, CHROME_UA)
+    page_robots = " ".join(x for x in [", ".join(META_ROBOTS_RE.findall(browser["html"] or "")),
+                                       browser["headers"].get("x-robots-tag", "")] if x)
+
+    def test(agent):
+        token, company, purpose, bid = agent
+        try:
+            allowed = rp.can_fetch(token, url)
+        except Exception:
+            allowed = None
+        live = None
+        if bid:
+            r = http_get(url, BOT_BY_ID[bid][3])
+            live = {"status": r["status"], "error": r["error"], "challenge": _is_challenge(r["html"]), "ms": r["ms"]}
+        if allowed is False:
+            verdict = "blocked_robots"
+        elif live and (live["error"] or live["challenge"] or (live["status"] or 0) >= 400):
+            verdict = "blocked_server"
+        else:
+            verdict = "allowed"
+        return {"token": token, "company": company, "purpose": purpose, "robots_allowed": allowed,
+                "live": live, "verdict": verdict}
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        agents = list(ex.map(test, AI_AGENTS))
+    return {"url": url, "robots": robots, "browser_status": browser["status"], "browser_error": browser["error"],
+            "page_robots": page_robots, "agents": agents, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}, 200
+
+
+# ---------------------------------------------------------------- llms.txt
+LLMS_LINK_RE = re.compile(r"^\s*[-*]\s*\[([^\]]+)\]\(([^)\s]+)\)\s*(?::\s*(.*))?$")
+LLMS_SKIP_SEGMENTS = {"category", "tag", "author", "page", "feed", "wp-content", "wp-json", "cart", "checkout", "my-account"}
+LLMS_OPTIONAL_SEGMENTS = {"blog", "news", "post", "posts", "article", "articles", "insights", "updates", "press"}
+
+
+def check_llms(url):
+    try:
+        url = _normalize_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    parts = urllib.parse.urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    files = []
+    for name in ("llms.txt", "llms-full.txt"):
+        r = http_get(f"{origin}/{name}", CHROME_UA, accept="text/plain,text/markdown,*/*")
+        body = r["html"] or ""
+        looks_html = "<html" in body[:3000].lower() or "<!doctype html" in body[:300].lower()
+        f = {"name": name, "url": f"{origin}/{name}", "status": r["status"], "error": r["error"],
+             "content_type": r["headers"].get("content-type", ""), "bytes": r["bytes"], "exists": False, "text": "", "note": ""}
+        if r["status"] == 200 and body.strip() and not looks_html:
+            f["exists"] = True
+            f["text"] = body[:200000]
+        elif r["status"] == 200 and looks_html:
+            f["note"] = "This address returns a web page, not a text file (often a page or a 'not found' page that still answers 200)."
+        files.append(f)
+
+    issues, sections, links = [], [], []
+
+    def add(level, msg):
+        issues.append({"level": level, "msg": msg, "where": "llms.txt"})
+
+    main = files[0]
+    if main["exists"]:
+        lines = main["text"].replace("\r", "").split("\n")
+        nonempty = [l for l in lines if l.strip()]
+        if not nonempty or not re.match(r"^#\s+\S", nonempty[0]):
+            add("error", "The file should start with one H1 title, like '# Company name'.")
+        h1s = [l for l in lines if re.match(r"^#\s", l)]
+        if len(h1s) > 1:
+            add("warning", f"The file has {len(h1s)} H1 titles; the format expects exactly one.")
+        if not any(l.lstrip().startswith(">") for l in nonempty[:6]):
+            add("suggestion", "Add a short summary of the site as a quote right after the title (a line starting with '> ').")
+        cur = None
+        for l in lines:
+            m = re.match(r"^##\s+(.+)", l)
+            if m:
+                cur = {"name": m.group(1).strip(), "links": 0}
+                sections.append(cur)
+                continue
+            lm = LLMS_LINK_RE.match(l)
+            if lm:
+                links.append({"title": lm.group(1).strip(), "url": lm.group(2).strip(), "notes": (lm.group(3) or "").strip(),
+                              "section": cur["name"] if cur else ""})
+                if cur:
+                    cur["links"] += 1
+        if not sections:
+            add("warning", "No '## Section' headings. The format groups links under H2 sections.")
+        if not links:
+            add("warning", "No links in the expected '- [Name](https://...): description' format.")
+        rel = [l for l in links if not l["url"].startswith(("http://", "https://"))]
+        if rel:
+            add("warning", f"{len(rel)} link{' is' if len(rel) == 1 else 's are'} relative. Use full https:// addresses.")
+        if links and sum(1 for l in links if not l["notes"]) > len(links) / 2:
+            add("suggestion", "Most links have no description after the colon. A short note helps AI tools pick the right page.")
+        ct = main["content_type"].lower()
+        if ct and "text/plain" not in ct and "markdown" not in ct:
+            add("suggestion", f"The file is served as '{main['content_type']}'. text/plain or text/markdown is expected.")
+        to_check = [l for l in links if l["url"].startswith(("http://", "https://"))][:25]
+
+        def chk(l):
+            r = http_get(l["url"], CHROME_UA, timeout=15)
+            l["status"] = r["status"]
+            l["error"] = r["error"]
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            list(ex.map(chk, to_check))
+        broken = [l for l in to_check if l.get("error") or (l.get("status") or 0) >= 400]
+        if broken:
+            add("error", f"{len(broken)} of {len(to_check)} checked links are broken or unreachable.")
+        if len(links) > 25:
+            add("suggestion", f"Only the first 25 of {len(links)} links were checked.")
+    else:
+        add("suggestion", "No llms.txt found. You can draft one from the site's pages below.")
+    order = {"error": 0, "warning": 1, "suggestion": 2}
+    issues.sort(key=lambda x: order[x["level"]])
+    return {"origin": origin, "files": files, "issues": issues, "sections": sections, "links": links,
+            "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}, 200
+
+
+def _clean(s, n=200):
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s if len(s) <= n else s[:n - 1].rsplit(" ", 1)[0] + "…"
+
+
+def generate_llms(url):
+    try:
+        url = _normalize_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    parts = urllib.parse.urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    urls, info = discover_urls(origin + "/", 40)
+    home = http_get(origin + "/", CHROME_UA)
+    hp = PageExtractor()
+    try:
+        hp.feed(home["html"] or "")
+    except Exception:
+        pass
+    title = re.sub(r"\s+", " ", hp.title).strip()
+    site_name = hp.meta.get("og:site_name") or (re.split(r"\s+[|\-–—]\s+", title)[-1].strip() if title else parts.hostname)
+    summary = _clean(hp.meta.get("description") or hp.meta.get("og:description") or "", 300)
+
+    def page_info(u):
+        segs = [x for x in urllib.parse.urlsplit(u).path.split("/") if x]
+        if segs and segs[0].lower() in LLMS_SKIP_SEGMENTS:
+            return None
+        r = http_get(u, CHROME_UA, timeout=15)
+        if r["error"] or (r["status"] or 0) >= 400 or not r["html"]:
+            return None
+        p = PageExtractor()
+        try:
+            p.feed(r["html"])
+        except Exception:
+            pass
+        if "noindex" in (p.meta.get("robots", "") + " " + r["headers"].get("x-robots-tag", "")).lower():
+            return None
+        t = re.sub(r"\s+", " ", p.title).strip()
+        for sep in (" | ", " - ", " – ", " — "):
+            if sep in t:
+                head, tail = t.rsplit(sep, 1)
+                if site_name and tail.strip().lower() == site_name.lower():
+                    t = head.strip()
+                    break
+        return {"url": r["final_url"] or u, "title": t or u, "desc": _clean(p.meta.get("description") or p.meta.get("og:description") or ""),
+                "segs": segs}
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        pages = [p for p in ex.map(page_info, urls) if p]
+    seen, uniq = set(), []
+    for p in pages:
+        if p["url"] not in seen:
+            seen.add(p["url"])
+            uniq.append(p)
+    groups, optional = {}, []
+    for p in uniq:
+        segs = p["segs"]
+        if segs and segs[0].lower() in LLMS_OPTIONAL_SEGMENTS:
+            optional.append(p)
+        elif len(segs) <= 1:
+            groups.setdefault("Main pages", []).append(p)
+        else:
+            groups.setdefault(segs[0].replace("-", " ").replace("_", " ").title(), []).append(p)
+
+    def line(p):
+        return f"- [{p['title']}]({p['url']})" + (f": {p['desc']}" if p["desc"] else "")
+
+    out = [f"# {site_name}", ""]
+    if summary:
+        out += [f"> {summary}", ""]
+    for name in sorted(groups, key=lambda n: (n != "Main pages", n)):
+        out += [f"## {name}", ""] + [line(p) for p in groups[name]] + [""]
+    if optional:
+        out += ["## Optional", ""] + [line(p) for p in optional] + [""]
+    return {"markdown": "\n".join(out).strip() + "\n", "pages": len(uniq), "source": info["source"]}, 200
+
+
 # ---------------------------------------------------------------- site scan
 SCANS = {}
 _SCAN_LOCK = threading.Lock()
@@ -1307,6 +1547,15 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/access":
+                body, code = check_access(payload.get("url", ""))
+                return self._json(body, code)
+            if path == "/api/llms":
+                body, code = check_llms(payload.get("url", ""))
+                return self._json(body, code)
+            if path == "/api/llms/generate":
+                body, code = generate_llms(payload.get("url", ""))
+                return self._json(body, code)
             if path == "/api/scan/start":
                 body, code = start_scan(payload.get("url", ""), str(payload.get("bot", "gptbot")), payload.get("limit", 50))
                 return self._json(body, code)
