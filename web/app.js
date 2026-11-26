@@ -358,8 +358,17 @@ $('#askBtn').onclick = async () => {
       if (r.error){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = r.error; }
       else{
         const tok = r.usage && r.usage.total_tokens ? `, ${r.usage.total_tokens.toLocaleString()} tokens` : '';
-        card.querySelector('.meta').textContent = `${(r.ms/1000).toFixed(1)} s${tok}${r.truncated ? ', page text truncated' : ''}${r.mode === 'fetch' ? `, model fetched the page (${r.engine} engine)` : ''}`;
+        let fetchInfo = '';
+        let fetchCount = 0;
+        if (r.mode === 'fetch'){
+          const stu = (r.usage && r.usage.server_tool_use) || {};
+          fetchCount = Object.entries(stu).filter(([k]) => k.includes('fetch')).reduce((a, [, v]) => a + (Number(v) || 0), 0);
+          fetchInfo = `, ${r.engine} engine, ${fetchCount ? `${fetchCount} page ${fetchCount === 1 ? 'fetch' : 'fetches'} recorded by OpenRouter` : 'no fetch recorded'}`;
+        }
+        card.querySelector('.meta').textContent = `${(r.ms/1000).toFixed(1)} s${tok}${r.truncated ? ', page text truncated' : ''}${fetchInfo}`;
         card.querySelector('.body').textContent = r.answer;
+        if (r.mode === 'fetch' && !fetchCount)
+          card.insertAdjacentHTML('beforeend', '<div class="warnline">OpenRouter recorded no page fetch for this answer, so the model may have answered without reading your page.</div>');
       }
     }catch(e){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = e.message; }
     done++; $('#askStatus').textContent = `${done} of ${models.length} answered.`;
