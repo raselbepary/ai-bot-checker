@@ -23,6 +23,7 @@ No extra packages needed: uses only Python's standard library.
 """
 import base64
 import gzip
+import io
 import hashlib
 import hmac
 import ipaddress
@@ -980,6 +981,323 @@ def generate_llms(url):
     return {"markdown": "\n".join(out).strip() + "\n", "pages": len(uniq), "source": info["source"]}, 200
 
 
+# ---------------------------------------------------------------- crawler visits (server logs)
+LOG_MAX_BYTES = 150 * 1024 * 1024
+LOG_MAX_LINES = 3000000
+# UA token (lowercase), label, company, IP list key
+LOG_BOTS = [
+    ("gptbot", "GPTBot", "OpenAI", "openai-gptbot"),
+    ("oai-searchbot", "OAI-SearchBot", "OpenAI", "openai-searchbot"),
+    ("chatgpt-user", "ChatGPT-User", "OpenAI", "openai-chatgpt-user"),
+    ("oai-adsbot", "OAI-AdsBot", "OpenAI", "openai-adsbot"),
+    ("claudebot", "ClaudeBot", "Anthropic", None),
+    ("claude-searchbot", "Claude-SearchBot", "Anthropic", None),
+    ("claude-user", "Claude-User", "Anthropic", None),
+    ("anthropic-ai", "anthropic-ai", "Anthropic", None),
+    ("perplexitybot", "PerplexityBot", "Perplexity", "perplexitybot"),
+    ("perplexity-user", "Perplexity-User", "Perplexity", "perplexity-user"),
+    ("google-cloudvertexbot", "Google-CloudVertexBot", "Google", None),
+    ("googlebot", "Googlebot", "Google", "googlebot"),
+    ("bingbot", "Bingbot", "Microsoft", "bingbot"),
+    ("applebot", "Applebot", "Apple", "applebot"),
+    ("mistralai-user", "MistralAI-User", "Mistral", "mistralai-user"),
+    ("ccbot", "CCBot", "Common Crawl", None),
+    ("meta-externalagent", "Meta-ExternalAgent", "Meta", None),
+    ("meta-externalfetcher", "Meta-ExternalFetcher", "Meta", None),
+    ("bytespider", "Bytespider", "ByteDance", None),
+    ("amazonbot", "Amazonbot", "Amazon", None),
+    ("duckassistbot", "DuckAssistBot", "DuckDuckGo", None),
+    ("cohere-ai", "cohere-ai", "Cohere", None),
+    ("youbot", "YouBot", "You.com", None),
+]
+IP_LISTS = {
+    "openai-gptbot": ["https://openai.com/gptbot.json"],
+    "openai-searchbot": ["https://openai.com/searchbot.json"],
+    "openai-chatgpt-user": ["https://openai.com/chatgpt-user.json"],
+    "openai-adsbot": ["https://openai.com/adsbot.json"],
+    "perplexitybot": ["https://www.perplexity.com/perplexitybot.json"],
+    "perplexity-user": ["https://www.perplexity.com/perplexity-user.json"],
+    "googlebot": ["https://developers.google.com/static/search/apis/ipranges/googlebot.json"],
+    "bingbot": ["https://www.bing.com/toolbox/bingbot.json"],
+    "applebot": ["https://search.developer.apple.com/applebot.json"],
+    "mistralai-user": ["https://mistral.ai/mistralai-user-ips.json"],
+    "cloudflare": ["https://www.cloudflare.com/ips-v4", "https://www.cloudflare.com/ips-v6"],
+}
+_IPLIST_CACHE = {"at": 0, "nets": {}, "errors": {}}
+_IPLIST_LOCK = threading.Lock()
+COMBINED_RE = re.compile(
+    r'^(?:(?P<vhost>\S+)\s+)??(?P<ip>[0-9a-fA-F:.]+)\s+\S+\s+\S+\s+\[(?P<time>[^\]]+)\]\s+'
+    r'"(?:(?P<method>[A-Za-z]+)\s+(?P<path>\S+)[^"]*|[^"]*)"\s+(?P<status>\d{3})\s+\S+'
+    r'(?:\s+"(?:[^"\\]|\\.)*"\s+"(?P<ua>(?:[^"\\]|\\.)*)")?')
+LOG_MONTHS = {m: i for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+LOG_JSON_KEYS = {
+    "ip": ("clientip", "client_ip", "remote_addr", "remoteaddr", "remote_ip", "ip", "c-ip", "clientaddress"),
+    "ua": ("clientrequestuseragent", "http_user_agent", "user_agent", "useragent", "ua", "cs(user-agent)"),
+    "path": ("clientrequesturi", "clientrequestpath", "request_uri", "uri", "path", "url", "request"),
+    "status": ("edgeresponsestatus", "status", "response_status", "originresponsestatus", "sc-status"),
+    "time": ("edgestarttimestamp", "timestamp", "@timestamp", "time", "time_local", "datetime", "date"),
+}
+
+
+def _collect_networks(obj, out, depth=0):
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _collect_networks(v, out, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_networks(v, out, depth + 1)
+    elif isinstance(obj, str):
+        s = obj.strip()
+        if s and (":" in s or "." in s) and len(s) < 60 and re.match(r"^[0-9a-fA-F:./]+$", s):
+            try:
+                out.append(ipaddress.ip_network(s, strict=False))
+            except ValueError:
+                pass
+
+
+def _fetch_ip_list(key):
+    nets, errors = [], []
+    for url in IP_LISTS[key]:
+        r = http_get(url, CHROME_UA, timeout=12, accept="application/json,text/plain,*/*")
+        if r["error"] or r["status"] != 200:
+            errors.append(r["error"] or f"HTTP {r['status']}")
+            continue
+        body = r["html"] or ""
+        try:
+            _collect_networks(json.loads(body), nets)
+        except ValueError:
+            _collect_networks(body.split(), nets)
+    return key, nets, ("; ".join(errors) if errors and not nets else "")
+
+
+def get_ip_lists():
+    with _IPLIST_LOCK:
+        fresh = time.time() - _IPLIST_CACHE["at"] < (12 * 3600 if not _IPLIST_CACHE["errors"] else 600)
+        if not fresh:
+            nets, errors = {}, {}
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                for key, n, err in ex.map(_fetch_ip_list, list(IP_LISTS)):
+                    if n:
+                        nets[key] = n
+                    else:
+                        errors[key] = err or "No addresses found in the list."
+            _IPLIST_CACHE.update({"at": time.time(), "nets": nets, "errors": errors})
+        return _IPLIST_CACHE["nets"], _IPLIST_CACHE["errors"]
+
+
+def _in_nets(addr, nets):
+    return any(addr.version == n.version and addr in n for n in nets)
+
+
+def _log_date(t):
+    if t is None or t == "":
+        return ""
+    if isinstance(t, (int, float)) or (isinstance(t, str) and t.isdigit()):
+        v = float(t)
+        while v > 1e11:
+            v /= 1000
+        try:
+            return time.strftime("%Y-%m-%d", time.gmtime(v))
+        except Exception:
+            return ""
+    s = str(t)
+    m = re.match(r"(\d{1,2})/([A-Za-z]{3})/(\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{LOG_MONTHS.get(m.group(2).title(), 0):02d}-{int(m.group(1)):02d}"
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+    return m.group(0) if m else ""
+
+
+def _json_field(d, name):
+    low = {k.lower(): v for k, v in d.items()}
+    for k in LOG_JSON_KEYS[name]:
+        if k in low and low[k] not in (None, ""):
+            return low[k]
+    return None
+
+
+def parse_log_line(line):
+    line = line.strip()
+    if not line:
+        return None
+    if line.startswith("{"):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(d, dict):
+            return None
+        path = str(_json_field(d, "path") or "")
+        if path.startswith(("GET ", "POST ", "HEAD ")):
+            path = path.split(" ")[1] if len(path.split(" ")) > 1 else path
+        if path.startswith(("http://", "https://")):
+            sp = urllib.parse.urlsplit(path)
+            path = sp.path + ("?" + sp.query if sp.query else "")
+        try:
+            status = int(_json_field(d, "status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        return {"ip": str(_json_field(d, "ip") or ""), "ua": str(_json_field(d, "ua") or ""),
+                "path": path or "/", "status": status, "date": _log_date(_json_field(d, "time"))}
+    m = COMBINED_RE.match(line)
+    if not m:
+        return None
+    ua = (m.group("ua") or "").replace('\\"', '"')
+    return {"ip": m.group("ip"), "ua": ua, "path": m.group("path") or "/", "status": int(m.group("status")),
+            "date": _log_date(m.group("time"))}
+
+
+def analyze_log_lines(lines):
+    nets, list_errors = get_ip_lists()
+    cf = nets.get("cloudflare", [])
+    stats = {"lines": 0, "parsed": 0, "unparsed": 0, "no_ua": 0, "first": "", "last": "", "truncated": False,
+             "ai_visits": 0, "verified": 0, "fake": 0, "unknown": 0, "proxy": 0}
+    bots, pages, errors, fakes, days = {}, {}, {}, {}, {}
+    vcache = {}
+    unparsed_sample = []
+    for raw in lines:
+        stats["lines"] += 1
+        if stats["lines"] > LOG_MAX_LINES:
+            stats["truncated"] = True
+            break
+        rec = parse_log_line(raw)
+        if rec is None:
+            if raw.strip():
+                stats["unparsed"] += 1
+                if len(unparsed_sample) < 3:
+                    unparsed_sample.append(raw.strip()[:200])
+            continue
+        stats["parsed"] += 1
+        date = rec["date"]
+        if date:
+            if not stats["first"] or date < stats["first"]:
+                stats["first"] = date
+            if date > stats["last"]:
+                stats["last"] = date
+        if not rec["ua"]:
+            stats["no_ua"] += 1
+            continue
+        lu = rec["ua"].lower()
+        bot = next((b for b in LOG_BOTS if b[0] in lu), None)
+        if not bot:
+            continue
+        _, label, company, key = bot
+        ck = (rec["ip"], key)
+        if ck not in vcache:
+            try:
+                addr = ipaddress.ip_address(rec["ip"].strip("[]"))
+            except ValueError:
+                addr = None
+            if addr is None:
+                v = "unknown"
+            elif cf and _in_nets(addr, cf):
+                v = "proxy"
+            elif key and key in nets:
+                v = "verified" if _in_nets(addr, nets[key]) else "fake"
+            else:
+                v = "unknown"
+            vcache[ck] = v
+        verdict = vcache[ck]
+        stats["ai_visits"] += 1
+        stats[verdict] += 1
+        b = bots.get(label)
+        if b is None:
+            b = bots[label] = {"label": label, "company": company, "key": key, "hits": 0, "verified": 0, "fake": 0,
+                               "unknown": 0, "proxy": 0, "pages": set(), "errors": 0, "robots": 0, "first": "", "last": "",
+                               "s2": 0, "s3": 0, "s4": 0, "s5": 0}
+        b["hits"] += 1
+        b[verdict] += 1
+        day = days.setdefault(date or "unknown", {"real": 0, "fake": 0})
+        if verdict == "fake":
+            fakes[(rec["ip"], label)] = fakes.get((rec["ip"], label), 0) + 1
+            day["fake"] += 1
+            continue
+        day["real"] += 1
+        path = (rec["path"].split("?")[0] or "/")[:300]
+        status = rec["status"]
+        if len(b["pages"]) < 20000:
+            b["pages"].add(path)
+        if 200 <= status < 600:
+            b["s" + str(status // 100)] = b.get("s" + str(status // 100), 0) + 1
+        if path == "/robots.txt":
+            b["robots"] += 1
+        if date:
+            if not b["first"] or date < b["first"]:
+                b["first"] = date
+            if date > b["last"]:
+                b["last"] = date
+        if status >= 400:
+            b["errors"] += 1
+            errors[(path, label, status)] = errors.get((path, label, status), 0) + 1
+        if path != "/robots.txt" and not SKIP_EXT_RE.search(path):
+            pg = pages.get(path)
+            if pg is None:
+                if len(pages) >= 50000:
+                    continue
+                pg = pages[path] = {"path": path, "hits": 0, "errors": 0, "bots": {}}
+            pg["hits"] += 1
+            pg["bots"][label] = pg["bots"].get(label, 0) + 1
+            if status >= 400:
+                pg["errors"] += 1
+    bot_rows = []
+    for b in sorted(bots.values(), key=lambda x: -x["hits"]):
+        b["pages"] = len(b["pages"])
+        b["verifiable"] = bool(b["key"] and b["key"] in nets)
+        b["list_error"] = list_errors.get(b["key"], "") if b["key"] else ""
+        b.pop("key", None)
+        bot_rows.append(b)
+    seen = {b["label"] for b in bot_rows}
+    not_seen = []
+    for _, label, company, _k in LOG_BOTS:
+        if label not in seen and label not in [x["label"] for x in not_seen]:
+            not_seen.append({"label": label, "company": company})
+    page_rows = sorted(pages.values(), key=lambda x: -x["hits"])[:150]
+    for p in page_rows:
+        p["bots"] = sorted(p["bots"].items(), key=lambda x: -x[1])
+    return {
+        "stats": stats, "bots": bot_rows, "not_seen": not_seen, "pages": page_rows, "total_pages": len(pages),
+        "errors": [{"path": k[0], "bot": k[1], "status": k[2], "count": v} for k, v in sorted(errors.items(), key=lambda x: -x[1])[:80]],
+        "fakes": [{"ip": k[0], "bot": k[1], "count": v} for k, v in sorted(fakes.items(), key=lambda x: -x[1])[:40]],
+        "days": [{"date": k, "real": v["real"], "fake": v["fake"]} for k, v in sorted(days.items())][-120:],
+        "list_errors": {k: v for k, v in list_errors.items()}, "unparsed_sample": unparsed_sample,
+        "analyzed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def analyze_log_upload(handler):
+    try:
+        length = int(handler.headers.get("Content-Length", 0))
+    except ValueError:
+        length = 0
+    if length <= 0:
+        return {"error": "The file is empty."}, 400
+    if length > LOG_MAX_BYTES:
+        return {"error": f"The file is too large. The limit is {LOG_MAX_BYTES // (1024 * 1024)} MB; compress it with gzip or upload a shorter period."}, 413
+    buf = bytearray()
+    remaining = length
+    while remaining > 0:
+        chunk = handler.rfile.read(min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        buf += chunk
+        remaining -= len(chunk)
+    name = urllib.parse.unquote(handler.headers.get("X-File-Name", "log"))[:200]
+    raw = io.BytesIO(bytes(buf))
+    stream = gzip.GzipFile(fileobj=raw) if bytes(buf[:2]) == b"\x1f\x8b" else raw
+    try:
+        text = io.TextIOWrapper(stream, encoding="utf-8", errors="replace")
+        result = analyze_log_lines(text)
+    except (OSError, EOFError) as e:
+        return {"error": f"Could not read the file: {e}"}, 400
+    result["file"] = {"name": name, "bytes": length, "gzip": bytes(buf[:2]) == b"\x1f\x8b"}
+    if result["stats"]["parsed"] == 0:
+        result["error"] = ("No log lines could be read. Supported formats: Apache or Nginx access logs (combined format, as "
+                           "in cPanel raw access logs) and JSON lines such as Cloudflare logs.")
+    return result, 200
+
+
 # ---------------------------------------------------------------- projects
 _PROJ_LOCK = threading.Lock()
 
@@ -1901,6 +2219,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/logs/analyze":
+            if not self._authorized():
+                return self._deny()
+            try:
+                body, code = analyze_log_upload(self)
+            except Exception as e:
+                body, code = {"error": f"{type(e).__name__}: {e}"}, 500
+            return self._json(body, code)
         if "application/json" not in self.headers.get("Content-Type", ""):
             return self._json({"error": "Expected a JSON request"}, 415)
         try:
