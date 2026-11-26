@@ -730,7 +730,7 @@ async function startCite(){
   $('#citeStatus').textContent = 'Starting…';
   try{
     const d = await post('/api/cite/start', {domain: $('#citeDomain').value, brands: $('#citeBrand').value, competitors: $('#citeComp').value,
-      prompts, models, engine: $('#citeEngine').value, location});
+      prompts, models, engine: $('#citeEngine').value, location, sentiment: $('#citeSentiment').checked});
     if (d.error){ $('#citeStatus').textContent = d.error; $('#citeBtn').disabled = false; return; }
     pollCite(d.id);
   }catch(e){ $('#citeStatus').textContent = 'Could not start the test: ' + e.message; $('#citeBtn').disabled = false; }
@@ -790,7 +790,11 @@ function renderCite(){
   const ranks = cited.map(r => r.brand.rank);
   const avg = ranks.length ? (ranks.reduce((a, b) => a + b, 0) / ranks.length).toFixed(1) : null;
   const noSearch = ok.filter(r => !r.searches && !(r.citations || []).length).length;
+  const score = ok.length ? Math.round(ok.reduce((a, r) => a + answerScore(r), 0) / ok.length) : null;
+  const rated = ok.filter(r => r.sentiment), pos = rated.filter(r => r.sentiment === 'positive').length, neg = rated.filter(r => r.sentiment === 'negative').length;
   $('#citeSummary').innerHTML = `
+    ${score !== null ? `<span class="chip ${score >= 50 ? 'ok' : score >= 20 ? 'warn' : 'bad'}">Visibility score ${score}/100</span>` : ''}
+    ${rated.length ? `<span class="chip ${neg ? 'warn' : 'ok'}">Described positively in ${pos} of ${rated.length}${neg ? `, negatively in ${neg}` : ''}</span>` : ''}
     <span class="chip ${cited.length ? 'ok' : 'bad'}">Cited in ${cited.length} of ${ok.length} answers (${pct(cited.length, ok.length)})</span>
     <span class="chip ${named.length ? 'ok' : 'warn'}">Named in ${named.length} of ${ok.length} (${pct(named.length, ok.length)})</span>
     ${avg ? `<span class="chip na">Average position when cited: #${avg}</span>` : ''}
@@ -828,7 +832,8 @@ function renderCite(){
       <div class="dbody">
         ${r.error ? `<p class="chip bad" style="white-space:normal">${esc(r.error)}</p>` : `
         <div class="note" style="margin:0 0 8px">${r.searches ? plural(r.searches, 'search') + ' recorded by OpenRouter' : 'No search recorded by OpenRouter'}, ${(r.ms / 1000).toFixed(1)} s${r.tokens ? ', ' + r.tokens.toLocaleString() + ' tokens' : ''}</div>
-        <div class="answertext">${esc(r.answer) || '(empty answer)'}</div>
+        ${r.sentiment ? `<div class="note" style="margin:0 0 8px"><span class="chip ${SENT[r.sentiment][0]}">Described ${SENT[r.sentiment][1]}</span> ${esc(r.sentiment_reason || '')}</div>` : ''}
+        <div class="answertext">${highlightAnswer(r.answer, d) || '(empty answer)'}</div>
         <div class="subhead">Sources (${srcs.length})</div>
         ${srcs.length ? `<ol class="sources">${srcs.map(c => {
           const h = hostOf(c.url);
@@ -838,15 +843,18 @@ function renderCite(){
         }).join('')}</ol>` : '<div class="note" style="margin:0">No sources were returned.</div>'}`}
       </div></details>`;
   }).join('');
+  renderCiteInsights();
+  renderTrend();
 }
 
 function citeCsv(){
   if (!CITE) return;
   const comps = compDomains();
-  const cols = ['question', 'model', 'result', 'cited_position', 'named', 'searches', ...comps.map(c => `competitor: ${c}`), 'sources'];
+  const cols = ['question', 'model', 'result', 'cited_position', 'named', 'searches', 'score', 'sentiment', ...comps.map(c => `competitor: ${c}`), 'sources'];
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = [cols.map(q).join(',')].concat(CITE.results.map(r => [r.prompt, r.model,
     r.error ? 'error: ' + r.error : citeStatusOf(r), r.brand && r.brand.rank || '', r.brand && r.brand.mentioned ? 'yes' : 'no', r.searches || 0,
+    r.error ? '' : answerScore(r), r.sentiment || '',
     ...comps.map((c, i) => { const x = (r.competitors || [])[i]; return !x ? '' : x.cited ? `cited #${x.rank}` : x.mentioned ? 'named' : 'no'; }),
     (r.hosts || []).join(' ')].map(q).join(',')));
   const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type: 'text/csv;charset=utf-8'});
@@ -862,6 +870,7 @@ async function loadCiteHistory(){
     const d = await api('/api/cite/list');
     const cur = CITE ? CITE.id : '';
     const items = d.runs || [];
+    CITE_RUNS = items; renderTrend();
     $('#citeHistory').innerHTML = (items.length ? '<option value="">Choose a test…</option>' : '<option value="">None yet</option>') + items.map(s =>
       `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.domain)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total}${s.status === 'running' ? ' (running)' : ''}</option>`).join('');
   }catch(e){}
@@ -923,7 +932,7 @@ function renderProjects(){
       ? `<div class="chips"><span class="chip ${s.errors ? 'bad' : 'ok'}">${plural(s.errors, 'error page')}</span><span class="chip ${s.warnings ? 'warn' : 'ok'}">${plural(s.warnings, 'warning page')}</span><span class="chip na">${plural(s.pages, 'page')}</span></div><span class="note" style="margin:0">${esc((s.started_at || '').slice(0, 16))}, as ${esc(s.bot || '')}</span>`
       : '<span class="note" style="margin:0">Not scanned yet</span>';
     const citeHtml = c
-      ? `<div class="chips"><span class="chip ${c.cited ? 'ok' : 'bad'}">Cited ${pct(c.cited, c.answers)}</span><span class="chip ${c.named ? 'ok' : 'warn'}">Named ${pct(c.named, c.answers)}</span><span class="chip na">${plural(c.answers, 'answer')}</span></div><span class="note" style="margin:0">${esc((c.started_at || '').slice(0, 16))}</span>`
+      ? `<div class="chips">${c.score !== null && c.score !== undefined ? `<span class="chip ${c.score >= 50 ? 'ok' : c.score >= 20 ? 'warn' : 'bad'}">Score ${c.score}</span>` : ''}<span class="chip ${c.cited ? 'ok' : 'bad'}">Cited ${pct(c.cited, c.answers)}</span><span class="chip ${c.named ? 'ok' : 'warn'}">Named ${pct(c.named, c.answers)}</span><span class="chip na">${plural(c.answers, 'answer')}</span></div><span class="note" style="margin:0">${esc((c.started_at || '').slice(0, 16))}</span>`
       : '<span class="note" style="margin:0">No test yet</span>';
     return `<article class="projcard ${p.id === active ? 'active' : ''}">
       <header><h3>${esc(p.name)}</h3><span class="sub">${esc(p.site)}</span></header>
@@ -1122,6 +1131,159 @@ function logCsv(){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+
+/* ---------------------------------------------------------------- citation insights */
+let CITE_RUNS = [], OPPS = [];
+const SENT = {positive: ['ok', 'positively'], neutral: ['na', 'neutrally'], negative: ['bad', 'negatively']};
+function answerScore(r){
+  const b = r.brand || {}; let s = 0;
+  if (b.mentioned) s += 40 + (r.sentiment === 'positive' ? 20 : r.sentiment === 'negative' ? 0 : 10);
+  if (b.cited){ const k = b.rank || 9; s += k === 1 ? 40 : k === 2 ? 30 : k === 3 ? 20 : 10; }
+  return s;
+}
+function cleanDom(s){ s = String(s || '').trim(); return hostOf(/^https?:\/\//i.test(s) ? s : 'http://' + s); }
+function parseComps(list){
+  return (list || []).map(e => {
+    const m = e.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if (m) return {label: e, names: m[1].trim() ? [m[1].trim()] : [], domain: cleanDom(m[2])};
+    if (e.includes('.') && !e.includes(' ')) return {label: e, names: [], domain: cleanDom(e)};
+    return {label: e, names: [e], domain: ''};
+  });
+}
+function reEsc(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function highlightAnswer(text, d){
+  const html = esc(text || '');
+  const terms = [];
+  (d.brands || []).forEach(n => n && n.length > 1 && terms.push([n, 'me']));
+  if (d.domain) terms.push([d.domain, 'me']);
+  parseComps(d.competitors).forEach(c => { c.names.forEach(n => n.length > 1 && terms.push([n, 'them'])); if (c.domain) terms.push([c.domain, 'them']); });
+  if (!terms.length) return html;
+  terms.sort((a, b) => b[0].length - a[0].length);
+  const cls = new Map(terms.map(([t, c]) => [esc(t).toLowerCase(), c]));
+  const re = new RegExp('(?<![\\w])(' + terms.map(([t]) => reEsc(esc(t))).join('|') + ')(?![\\w])', 'gi');
+  return html.replace(re, m => `<mark class="${cls.get(m.toLowerCase()) || 'me'}">${m}</mark>`);
+}
+
+function renderCiteInsights(){
+  const d = CITE; if (!d) return;
+  const ok = d.results.filter(r => !r.error);
+  const comps = parseComps(d.competitors);
+  const compOf = h => comps.find(c => c.domain && domMatch(h, c.domain));
+  const hosts = new Map(), opps = new Map();
+  ok.forEach(r => {
+    const srcs = (r.citations || []).length ? r.citations : (r.text_links || []).map(u => ({url: u, title: ''}));
+    const named = (r.competitors || []).filter(x => x.mentioned || x.cited).map(x => x.label);
+    const seen = new Set();
+    srcs.forEach(c => {
+      const h = hostOf(c.url); if (!h) return;
+      if (!seen.has(h)){
+        seen.add(h);
+        const e = hosts.get(h) || {host: h, n: 0, qs: new Set()};
+        e.n++; e.qs.add(r.prompt); hosts.set(h, e);
+      }
+      if (!r.brand.cited && !domMatch(h, d.domain) && !compOf(h)){
+        const u = c.url.split('#')[0];
+        const o = opps.get(u) || {url: u, title: c.title || '', host: h, n: 0, qs: new Set(), comps: new Set()};
+        o.n++; o.qs.add(r.prompt); named.forEach(x => o.comps.add(x));
+        if (!o.title && c.title) o.title = c.title;
+        opps.set(u, o);
+      }
+    });
+  });
+  const hrows = [...hosts.values()].sort((a, b) => b.n - a.n).slice(0, 30);
+  $('#citeSources').innerHTML = hrows.length ? `<thead><tr><th>Website</th><th>Cited in</th><th>Whose site</th><th>Example question</th></tr></thead><tbody>${
+    hrows.map(e => {
+      const mine = domMatch(e.host, d.domain), comp = compOf(e.host);
+      return `<tr><td><strong>${esc(e.host)}</strong></td><td class="num">${e.n} of ${ok.length} (${Math.round(e.n / ok.length * 100)}%)</td>
+        <td>${mine ? '<span class="chip ok">You</span>' : comp ? `<span class="chip warn">${esc(comp.label)}</span>` : '<span class="chip na">Third party</span>'}</td>
+        <td>${esc([...e.qs][0])}${e.qs.size > 1 ? ` <span class="note" style="margin:0">+${e.qs.size - 1} more</span>` : ''}</td></tr>`;
+    }).join('')}</tbody>` : '<tbody><tr><td class="note">No sources were returned.</td></tr></tbody>';
+  OPPS = [...opps.values()].sort((a, b) => b.n - a.n || b.comps.size - a.comps.size).slice(0, 25);
+  $('#citeOpps').innerHTML = OPPS.length ? OPPS.map((o, i) => `<div class="opp">
+      <div class="opphead"><div><a href="${esc(o.url)}" target="_blank" rel="noopener"><strong>${esc(o.title || o.url)}</strong></a><span class="sub">${esc(o.host)}</span></div>
+      <button class="ghost" data-brief="${i}">Draft outreach</button></div>
+      <div class="note" style="margin:4px 0 0">Cited in ${plural(o.n, 'answer')} where you were not cited: ${[...o.qs].map(q => '“' + esc(q) + '”').join(', ')}${o.comps.size ? `. Competitors named there: ${esc([...o.comps].join(', '))}` : ''}.</div>
+      <div class="brief hidden" id="brief-${i}"></div></div>`).join('')
+    : '<div class="note">No opportunities found: your site was cited wherever sources were given, or the other sources were competitors\' own sites.</div>';
+  $$('[data-brief]').forEach(b => b.onclick = () => draftBrief(Number(b.dataset.brief), b));
+}
+
+async function draftBrief(i, btn){
+  const o = OPPS[i], box = $('#brief-' + i);
+  const model = ($$('.cite-model:checked')[0] || {}).value || currentModels()[0];
+  if (SETTINGS.key_source === 'none'){ box.classList.remove('hidden'); box.innerHTML = '<div class="note">Add an OpenRouter key first, in <a class="links" href="#/settings">Settings</a>.</div>'; return; }
+  btn.disabled = true; box.classList.remove('hidden');
+  box.innerHTML = `<div class="note">Reading the page and drafting with ${esc(model)}…</div>`;
+  try{
+    const r = await post('/api/brief', {url: o.url, title: o.title, domain: CITE.domain, brands: CITE.brands, question: [...o.qs][0], competitors: [...o.comps], model});
+    if (r.error) throw new Error(r.error);
+    box.innerHTML = `<div class="answertext">${esc(r.brief)}</div><div class="links"><a data-copybrief="1">Copy</a></div>`;
+    box.querySelector('[data-copybrief]').onclick = e => navigator.clipboard.writeText(r.brief).then(() => { e.target.textContent = 'Copied'; });
+  }catch(e){ box.innerHTML = `<div class="note" style="color:var(--bad)">Could not draft: ${esc(e.message)}</div>`; }
+  finally{ btn.disabled = false; }
+}
+
+function renderTrend(){
+  const box = $('#citeTrend'); if (!box || !CITE) return;
+  const runs = CITE_RUNS.filter(s => s.domain === CITE.domain && s.summary && s.summary.score !== null && s.summary.score !== undefined)
+    .sort((a, b) => (a.started_at || '').localeCompare(b.started_at || '')).slice(-12);
+  if (runs.length < 2){
+    box.innerHTML = runs.length ? '<div class="note">Run this test again later to see how the score changes over time.</div>' : '';
+    return;
+  }
+  const last = runs[runs.length - 1], prev = runs[runs.length - 2];
+  const delta = last.summary.score - prev.summary.score;
+  box.innerHTML = `<div class="subhead">Visibility over time <span class="chip ${delta > 0 ? 'ok' : delta < 0 ? 'bad' : 'na'}">${delta > 0 ? '+' : ''}${delta} since ${esc((prev.started_at || '').slice(0, 10))}</span></div>
+    <div class="trendbars">${runs.map(s => `<button class="tbar ${s.id === CITE.id ? 'cur' : ''}" data-run="${esc(s.id)}" title="${esc(s.started_at)}: score ${s.summary.score}, cited in ${s.summary.cited} of ${s.summary.answers} answers"><em>${s.summary.score}</em><span style="height:${Math.max(3, s.summary.score)}%"></span></button>`).join('')}</div>
+    <div class="daylabels"><span>${esc((runs[0].started_at || '').slice(0, 10))}</span><span>${esc((last.started_at || '').slice(0, 10))}</span></div>`;
+  $$('#citeTrend [data-run]').forEach(b => b.onclick = () => pollCite(b.dataset.run));
+}
+
+/* ---------------------------------------------------------------- question ideas */
+$('#qOpen').onclick = () => $('#qIdeas').classList.toggle('hidden');
+$('#qGen').onclick = async () => {
+  const proj = activeProject();
+  const dom = $('#citeDomain').value.trim();
+  const site = proj ? proj.site : (dom ? 'https://' + dom.replace(/^https?:\/\//, '') : '');
+  if (!site){ $('#qStatus').textContent = "Enter your site's domain first."; return; }
+  if (SETTINGS.key_source === 'none'){ $('#qStatus').innerHTML = 'Add an OpenRouter key first, in <a class="links" href="#/settings">Settings</a>.'; return; }
+  const model = ($$('.cite-model:checked')[0] || {}).value || currentModels()[0];
+  $('#qGen').disabled = true;
+  $('#qStatus').textContent = `Reading the site and asking ${model} for ideas…`;
+  try{
+    const r = await post('/api/questions', {site, brands: $('#citeBrand').value, location: $('#citeLocation').value,
+      personas: $('#qPersonas').value, count: Number($('#qCount').value), model});
+    if (r.error) throw new Error(r.error);
+    $('#qList').innerHTML = r.questions.map((q, i) => `<label class="idea"><input type="checkbox" class="q-cb" value="${esc(q.question)}" ${i < 5 ? 'checked' : ''}>
+      <span>${esc(q.question)}<span class="chips" style="margin:3px 0 0">${q.persona ? `<span class="chip na">${esc(q.persona)}</span>` : ''}${q.intent ? `<span class="chip na">${esc(q.intent)}</span>` : ''}</span></span></label>`).join('');
+    $('#qActions').classList.remove('hidden');
+    $('#qSaveProj').classList.toggle('hidden', !proj);
+    $('#qStatus').textContent = `${plural(r.questions.length, 'idea')} from ${r.model}. Tick the ones to use.`;
+  }catch(e){ $('#qStatus').textContent = 'Could not generate ideas: ' + e.message; }
+  finally{ $('#qGen').disabled = false; }
+};
+function pickedIdeas(){ return $$('.q-cb:checked').map(c => c.value); }
+$('#qAdd').onclick = () => {
+  const cur = citeLines();
+  const add = pickedIdeas().filter(q => !cur.includes(q));
+  const all = cur.concat(add);
+  $('#citePrompts').value = all.join('\n');
+  $('#citePrompts').dispatchEvent(new Event('input'));
+  $('#qStatus').textContent = all.length > 10
+    ? `Added ${plural(add.length, 'question')}. You now have ${all.length}; a test uses up to 10, so remove some before running.`
+    : `Added ${plural(add.length, 'question')}.`;
+};
+$('#qSaveProj').onclick = async () => {
+  const p = activeProject(); if (!p) return;
+  const qs = (p.questions || []).concat(pickedIdeas().filter(q => !(p.questions || []).includes(q))).slice(0, 10);
+  try{
+    const r = await post('/api/projects/save', {id: p.id, name: p.name, site: p.site, brands: p.brands, competitors: p.competitors, location: p.location, questions: qs});
+    if (r.error) throw new Error(r.error);
+    await loadProjects();
+    applyProject(PROJECTS.find(x => x.id === p.id), false);
+    $('#qStatus').textContent = `Saved to ${p.name}: ${plural(qs.length, 'question')} (projects keep up to 10).`;
+  }catch(e){ $('#qStatus').textContent = 'Could not save: ' + e.message; }
+};
 
 /* ---------------------------------------------------------------- start */
 async function init(){
