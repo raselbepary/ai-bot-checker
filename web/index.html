@@ -95,11 +95,11 @@
                 <select id="engine">
                   <option value="openrouter">OpenRouter: direct fetch, no JavaScript (free)</option>
                   <option value="native">Native: the model provider's own fetch, where available</option>
-                  <option value="exa">Exa: content extraction ($1 per 1,000 pages)</option>
+                  <option value="exa">Exa: content extraction, may return a cached copy ($1 per 1,000 pages)</option>
                   <option value="parallel">Parallel: content extraction ($1 per 1,000 pages)</option>
-                  <option value="firecrawl">Firecrawl: scraping service ($2.50 per 1,000 pages)</option>
+                  <option value="firecrawl">Firecrawl: loads the page in a browser and runs JavaScript ($2.50 per 1,000 pages)</option>
                 </select>
-                <div class="note" style="margin-top:6px">Models must support tool calling. Fetches are limited to the checked page's domain, at most 3 per model. Native falls back to the OpenRouter engine when a model has no built-in fetch.</div>
+                <div class="note" style="margin-top:6px">Models must support tool calling. Fetches are limited to the checked page's domain, at most 3 per model. Native falls back to the OpenRouter engine when a model has no built-in fetch. Engines that run JavaScript can catch animated counters at their starting value.</div>
               </div>
             </div>
             <div>
