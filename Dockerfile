@@ -2,12 +2,13 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
-    PORT=8765
+    PORT=8765 \
+    DATA_DIR=/data
 
 WORKDIR /app
 COPY app.py .
 
-RUN useradd --system --uid 10001 appuser
+RUN useradd --system --uid 10001 appuser && mkdir -p /data && chown appuser /data
 USER appuser
 
 EXPOSE 8765
