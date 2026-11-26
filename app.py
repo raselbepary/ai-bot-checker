@@ -1886,6 +1886,9 @@ def _readiness(url):
     counts = {k: sum(1 for c in checks if c["status"] == k) for k in ("pass", "warn", "fail")}
     score = round(100 * (counts["pass"] + 0.5 * counts["warn"]) / max(1, len(checks)))
     result = {"url": url, "final_url": r["final_url"], "score": score, "counts": counts, "checks": checks,
+              "schema": {"items": len(s.get("items") or []), "types": (s.get("types") or [])[:6],
+                         "errors": (s.get("counts") or {}).get("error", 0)},
+              "counters": {"total": len(counters), "bad": bad_counters},
               "outline": [{"level": lvl, "text": x[:160]} for lvl, x in heads[:80]], "intro": intro or "", "words": words,
               "title": title, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     return result, 200, text
@@ -1934,6 +1937,115 @@ def readiness_ai(p):
            for x in (j.get("faq") or []) if isinstance(x, dict) and x.get("q")][:6]
     return {"main_question": str(j.get("main_question", ""))[:300], "bluf": str(j.get("bluf", ""))[:1200],
             "suggestions": sug, "faq": faq, "model": model}, 200
+
+
+# ---------------------------------------------------------------- competitor comparison
+CMP_BOTS = [("GPTBot", "gptbot"), ("ClaudeBot", "claudebot"), ("PerplexityBot", "perplexitybot"),
+            ("OAI-SearchBot", "oai-search"), ("Googlebot", "googlebot")]
+CMP_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+
+
+def _cmp_dir():
+    return os.path.join(DATA_DIR, "compares")
+
+
+def _can_fetch(rp, token, url):
+    try:
+        return rp.can_fetch(token, url)
+    except Exception:
+        return True
+
+
+def compare_site(url):
+    out = {"url": url, "host": _bare_host(url), "error": ""}
+    res, code, _text = _readiness(url)
+    if code != 200:
+        out["error"] = res.get("error", "Could not review the page.")
+        return out
+    chk = {c["label"]: c for c in res["checks"]}
+    out.update({"final_url": res["final_url"], "title": res["title"], "score": res["score"], "words": res["words"],
+                "schema": res.get("schema") or {"items": 0, "types": [], "errors": 0},
+                "counters": res.get("counters") or {"total": 0, "bad": 0},
+                "opening": (chk.get("Clear opening paragraph") or {}).get("status", "fail"),
+                "dated": (chk.get("Publish or update date") or {}).get("status") == "pass",
+                "fails": res["counts"]["fail"], "warns": res["counts"]["warn"]})
+    rp, robots = load_robots(url)
+    out["robots_blocked"] = [label for label, _bid in CMP_BOTS if not _can_fetch(rp, label, url)]
+
+    def live(bot):
+        label, bid = bot
+        r = http_get(url, BOT_BY_ID[bid][3])
+        return label, bool(r["error"] or _is_challenge(r["html"]) or (r["status"] or 0) >= 400), r["ms"]
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        lives = list(ex.map(live, CMP_BOTS[:3]))
+    out["server_blocked"] = [label for label, bad, _ms in lives if bad]
+    out["ms"] = lives[0][2]
+    parts = urllib.parse.urlsplit(url)
+    r = http_get(f"{parts.scheme}://{parts.netloc}/llms.txt", CHROME_UA, timeout=12, accept="text/plain,*/*")
+    body = r["html"] or ""
+    out["llms"] = bool(r["status"] == 200 and body.strip() and "<html" not in body[:3000].lower())
+    out["sitemap"] = bool(robots.get("text") and re.search(r"(?im)^\s*sitemap\s*:", robots["text"]))
+    return out
+
+
+def run_compare(p):
+    try:
+        mine = _normalize_url(str(p.get("site", "")))
+    except BlockedURL as e:
+        return {"error": f"Your site: {e}"}, 400
+    comps = []
+    raw = p.get("competitors") or []
+    if isinstance(raw, str):
+        raw = raw.split("\n")
+    for c in [str(x).strip() for x in raw if str(x).strip()][:5]:
+        try:
+            u = _normalize_url(c)
+        except BlockedURL as e:
+            return {"error": f"{c}: {e}"}, 400
+        if _bare_host(u) != _bare_host(mine) and u not in comps:
+            comps.append(u)
+    if not comps:
+        return {"error": "Add at least one competitor website that is different from yours."}, 400
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        results = list(ex.map(compare_site, [mine] + comps))
+    results[0]["you"] = True
+    job = {"id": secrets.token_hex(6), "site": mine, "host": _bare_host(mine), "sites": results,
+           "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if storage_writable():
+        d = _cmp_dir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, job["id"] + ".json"), "w", encoding="utf-8") as f:
+            json.dump(job, f)
+        for old in _json_files_newest_first(d)[50:]:
+            try:
+                os.remove(old)
+            except Exception:
+                pass
+    return job, 200
+
+
+def list_compares():
+    out = []
+    for p in _json_files_newest_first(_cmp_dir())[:30]:
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            out.append({"id": j.get("id"), "site": j.get("site"), "host": j.get("host"),
+                        "checked_at": j.get("checked_at"), "count": len(j.get("sites") or [])})
+        except Exception:
+            pass
+    return {"runs": out}
+
+
+def load_compare(cid):
+    if not CMP_ID_RE.match(cid or ""):
+        return None
+    try:
+        with open(os.path.join(_cmp_dir(), cid + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- AI citations
@@ -2918,6 +3030,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/compare/list":
+            self._json(list_compares())
+        elif path == "/api/compare/get":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            job = load_compare((q.get("id") or [""])[0])
+            self._json(job if job else {"error": "Comparison not found."}, 200 if job else 404)
         elif path == "/api/projects":
             self._json(projects_with_latest())
         else:
@@ -2975,6 +3093,9 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/compare":
+                body, code = run_compare(payload)
+                return self._json(body, code)
             if path == "/api/jsgap":
                 body, code = js_gap(payload.get("url", ""))
                 return self._json(body, code)
