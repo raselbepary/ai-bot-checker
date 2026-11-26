@@ -314,31 +314,51 @@ function setupAI(){
 }
 document.querySelectorAll('[data-q]').forEach(a => a.onclick = () => $('#question').value = QUESTIONS[a.dataset.q]);
 
+function aiMode(){ return ($$('input[name=aimode]').find(r => r.checked) || {}).value || 'text'; }
+function applyMode(){
+  const m = aiMode();
+  $('#textOpts').classList.toggle('hidden', m !== 'text');
+  $('#fetchOpts').classList.toggle('hidden', m !== 'fetch');
+  store('abvc_aimode', m);
+}
+$$('input[name=aimode]').forEach(r => r.onchange = applyMode);
+$('#engine').onchange = () => store('abvc_engine', $('#engine').value);
+
 $('#askBtn').onclick = async () => {
   if (!LAST){ $('#askStatus').textContent = 'Check a page first.'; return; }
   const key = $('#onceKey').value.trim();
   if (!key && SETTINGS.key_source === 'none'){ $('#askStatus').innerHTML = 'Add an OpenRouter key first, in <a class="links" href="#/settings">Settings</a>.'; return; }
   const models = $$('.model-cb:checked').map(c => c.value);
   if (!models.length){ $('#askStatus').textContent = 'Pick at least one model.'; return; }
-  const view = LAST.results.find(r => r.id === $('#viewBot').value);
-  if (!view){ $('#askStatus').textContent = 'Pick a bot view that has readable text.'; return; }
+  const mode = aiMode();
+  const engine = $('#engine').value;
   const question = $('#question').value.trim() || QUESTIONS.numbers;
-  let text = view.text;
-  if ($('#incSchema').checked && view.structured && view.structured.jsonld.length)
-    text += '\n\nSTRUCTURED DATA (JSON-LD) IN THE PAGE:\n' + JSON.stringify(view.structured.jsonld).slice(0, 15000);
+  let payload;
+  if (mode === 'fetch'){
+    payload = {key, url: LAST.url, question, mode: 'fetch', engine};
+  } else {
+    const view = LAST.results.find(r => r.id === $('#viewBot').value);
+    if (!view){ $('#askStatus').textContent = 'Pick a bot view that has readable text.'; return; }
+    let text = view.text;
+    if ($('#incSchema').checked && view.structured && view.structured.jsonld.length)
+      text += '\n\nSTRUCTURED DATA (JSON-LD) IN THE PAGE:\n' + JSON.stringify(view.structured.jsonld).slice(0, 15000);
+    payload = {key, bot: view.label, url: LAST.url, text, question, mode: 'text'};
+  }
   $('#askBtn').disabled = true;
   let done = 0;
-  $('#askStatus').textContent = `Asking ${plural(models.length, 'model')} using the ${view.label} view…`;
+  $('#askStatus').textContent = mode === 'fetch'
+    ? `Asking ${plural(models.length, 'model')} to fetch the page with the ${engine} engine…`
+    : `Asking ${plural(models.length, 'model')} using the ${payload.bot} view…`;
   $('#answers').innerHTML = models.map((m, i) =>
     `<div class="answer" id="ans${i}"><h3>${esc(m)}</h3><div class="meta">Waiting for answer…</div><div class="body"></div></div>`).join('');
   await Promise.all(models.map(async (model, i) => {
     const card = $('#ans' + i);
     try{
-      const r = await post('/api/ask', {key, model, bot: view.label, url: LAST.url, text, question});
+      const r = await post('/api/ask', {...payload, model});
       if (r.error){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = r.error; }
       else{
         const tok = r.usage && r.usage.total_tokens ? `, ${r.usage.total_tokens.toLocaleString()} tokens` : '';
-        card.querySelector('.meta').textContent = `${(r.ms/1000).toFixed(1)} s${tok}${r.truncated ? ', page text truncated' : ''}`;
+        card.querySelector('.meta').textContent = `${(r.ms/1000).toFixed(1)} s${tok}${r.truncated ? ', page text truncated' : ''}${r.mode === 'fetch' ? `, model fetched the page (${r.engine} engine)` : ''}`;
         card.querySelector('.body').textContent = r.answer;
       }
     }catch(e){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = e.message; }
@@ -351,6 +371,10 @@ $('#askBtn').onclick = async () => {
 async function init(){
   route();
   $('#url').value = load('abvc_url') || '';
+  const savedMode = load('abvc_aimode');
+  if (savedMode) $$('input[name=aimode]').forEach(r => r.checked = r.value === savedMode);
+  if (load('abvc_engine')) $('#engine').value = load('abvc_engine');
+  applyMode();
   try{
     const saved = sessionStorage.getItem('abvc_last');
     if (saved){ LAST = JSON.parse(saved); renderAll(); }
