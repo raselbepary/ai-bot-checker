@@ -12,6 +12,7 @@
     <a class="brand" href="#/bots">AI Bot View Checker</a>
     <nav aria-label="Tools">
       <a href="#/bots" data-page="bots">Bot view</a>
+      <a href="#/scan" data-page="scan">Site scan</a>
       <a href="#/schema" data-page="schema">Structured data</a>
       <a href="#/ai" data-page="ai">AI test</a>
     </nav>
@@ -48,6 +49,50 @@
         <div class="panel"><div class="tablewrap"><table id="summary"></table></div></div>
         <h2 class="sub">Details per bot</h2>
         <div id="details"></div>
+      </div>
+    </div>
+
+    <!-- Site scan -->
+    <div class="page hidden" id="page-scan">
+      <header class="pagehead">
+        <h1>Site scan</h1>
+        <p class="lede">Check many pages at once from the site's sitemap, as one AI crawler sees them, and find every page with a problem.</p>
+      </header>
+      <section class="panel">
+        <div class="row url-row">
+          <input id="scanUrl" type="text" placeholder="https://www.example.com/ or a sitemap URL" aria-label="Site or sitemap URL">
+          <button id="scanBtn">Start scan</button>
+          <button class="ghost hidden" id="stopBtn">Stop</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <label class="fld" for="scanBot" style="margin:0">Scan as</label>
+          <select id="scanBot" style="width:auto"></select>
+          <label class="fld" for="scanLimit" style="margin:0 0 0 10px">Pages</label>
+          <select id="scanLimit" style="width:auto"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
+          <label class="fld" for="scanHistory" style="margin:0 0 0 10px">Recent scans</label>
+          <select id="scanHistory" style="width:auto;max-width:340px"><option value="">None yet</option></select>
+        </div>
+        <div class="status" id="scanStatus"></div>
+        <div class="progress hidden" id="scanProgress"><div id="scanBar"></div></div>
+      </section>
+      <div id="scanResults" class="hidden">
+        <section class="panel">
+          <div class="chips" id="scanSummary"></div>
+          <div class="fld" style="margin-top:12px">Issues found <span class="note" style="margin:0;font-weight:400">Click one to show only those pages</span></div>
+          <div class="chips" id="scanIssueTotals"></div>
+        </section>
+        <div class="row" style="margin-bottom:10px">
+          <div class="seg" id="scanLevels" role="group" aria-label="Show pages">
+            <button data-level="all" aria-pressed="true">All</button>
+            <button data-level="error" aria-pressed="false">Errors</button>
+            <button data-level="warning" aria-pressed="false">Warnings</button>
+            <button data-level="ok" aria-pressed="false">OK</button>
+          </div>
+          <input id="scanFilter" type="text" placeholder="Filter by URL or title…" style="flex:1;min-width:200px" aria-label="Filter pages">
+          <button class="ghost" id="scanCsv">Download CSV</button>
+        </div>
+        <div class="note" id="scanCount" style="margin:0 0 8px"></div>
+        <div class="panel" style="padding:8px 12px"><div class="tablewrap"><table id="scanTable"></table></div></div>
       </div>
     </div>
 
