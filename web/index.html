@@ -31,6 +31,7 @@
       <a href="#/access" data-page="access"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>AI access</span></a>
       <a href="#/logs" data-page="logs"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>Crawler visits</span></a>
       <a href="#/llms" data-page="llms"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>llms.txt</span></a>
+      <a href="#/compare" data-page="compare"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><span>Competitors</span></a>
     </nav>
     <nav aria-label="AI answers">
       <span class="navlabel">AI answers</span>
@@ -358,6 +359,44 @@
         </div>
         <div class="note">Edit the draft as needed, then upload it to the site's main folder so it opens at /llms.txt. Some SEO plugins can also create and serve one for you.</div>
       </section>
+    </div>
+
+    <!-- Competitor comparison -->
+    <div class="page hidden" id="page-compare">
+      <header class="pagehead">
+        <h1>Competitor comparison</h1>
+        <p class="lede">Runs the same AI visibility checks on your site and up to five competitors, side by side: crawler access, AI readiness, structured data, llms.txt and more.</p>
+      </header>
+      <section class="panel">
+        <div class="grid2">
+          <div>
+            <label class="fld" for="cmpSite">Your page</label>
+            <input id="cmpSite" type="text" placeholder="https://www.example.com/">
+            <div class="note">Usually the homepage. Use a service page to compare like with like.</div>
+          </div>
+          <div>
+            <label class="fld" for="cmpComps">Competitor pages <span class="note" style="margin:0;font-weight:400">one per line, up to 5</span></label>
+            <textarea id="cmpComps" rows="5" placeholder="https://www.rival-one.com/&#10;https://www.rival-two.com/"></textarea>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button id="cmpBtn">Compare sites</button>
+          <label class="fld" for="cmpHistory" style="margin:0 0 0 6px">Past comparisons</label>
+          <select id="cmpHistory" style="width:auto;max-width:320px"><option value="">None yet</option></select>
+        </div>
+        <div class="status" id="cmpStatus"></div>
+      </section>
+      <div id="cmpResults" class="hidden">
+        <section class="panel">
+          <h2>Where competitors are ahead</h2>
+          <ul class="issues" id="cmpAhead" style="margin-top:8px"></ul>
+        </section>
+        <section class="panel">
+          <h2>Side by side</h2>
+          <div class="note" style="margin:4px 0 10px">Best result in each row in green, weakest in red.</div>
+          <div class="tablewrap"><table id="cmpTable"></table></div>
+        </section>
+      </div>
     </div>
 
     <!-- AI test -->
