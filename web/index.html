@@ -14,6 +14,8 @@
       <a href="#/bots" data-page="bots">Bot view</a>
       <a href="#/scan" data-page="scan">Site scan</a>
       <a href="#/schema" data-page="schema">Structured data</a>
+      <a href="#/access" data-page="access">AI access</a>
+      <a href="#/llms" data-page="llms">llms.txt</a>
       <a href="#/ai" data-page="ai">AI test</a>
     </nav>
     <nav class="nav-bottom" aria-label="Account">
@@ -110,6 +112,71 @@
         </div>
         <div class="panel" id="schemaBody"></div>
       </div>
+    </div>
+
+    <!-- AI access -->
+    <div class="page hidden" id="page-access">
+      <header class="pagehead">
+        <h1>AI access</h1>
+        <p class="lede">Which AI crawlers your robots.txt and your server actually let in, and a ready-to-paste robots.txt with the rules you choose.</p>
+      </header>
+      <section class="panel">
+        <div class="row url-row">
+          <input id="accessUrl" type="text" placeholder="https://www.example.com/" aria-label="Page or site URL">
+          <button id="accessBtn">Check access</button>
+        </div>
+        <div class="status" id="accessStatus"></div>
+      </section>
+      <div id="accessResults" class="hidden">
+        <section class="panel">
+          <div class="chips" id="accessSummary"></div>
+          <div class="note" id="accessNotes" style="margin-top:6px"></div>
+          <div class="tablewrap" style="margin-top:12px"><table id="accessTable"></table></div>
+          <div class="note">The live test requests the page with each crawler's name from this server. Cloudflare and some firewalls also check where a request comes from, so a real crawler can be treated differently.</div>
+        </section>
+        <section class="panel">
+          <h2>robots.txt builder</h2>
+          <p class="hint">Choose Allow or Block for each crawler in the table above. Allowed crawlers follow your normal rules for all crawlers; blocked ones get “Disallow: /”. Your other rules and sitemap lines are kept.</p>
+          <div class="subhead" style="margin-top:0">Suggested robots.txt <a class="links" style="font-weight:400" id="copyRobots">Copy</a></div>
+          <pre class="text" id="robotsOut"></pre>
+          <div class="note">To apply it on WordPress, use your SEO plugin's robots.txt editor (Yoast SEO: Tools → File editor; Rank Math: General Settings → Edit robots.txt) or replace the robots.txt file in the site's main folder. robots.txt cannot undo a server block: if a crawler shows “Blocked by server”, check Cloudflare (Security → Bots) or your security plugin.</div>
+          <details class="bot"><summary>Current robots.txt</summary><div class="dbody"><pre class="text" id="robotsCurrent"></pre></div></details>
+        </section>
+      </div>
+    </div>
+
+    <!-- llms.txt -->
+    <div class="page hidden" id="page-llms">
+      <header class="pagehead">
+        <h1>llms.txt</h1>
+        <p class="lede">Check a site's llms.txt file and draft one from its pages. llms.txt is an optional, emerging format: a short Markdown guide to your site for AI tools. AI companies haven't widely confirmed using it, so treat it as a low-cost extra rather than a ranking factor.</p>
+      </header>
+      <section class="panel">
+        <div class="row url-row">
+          <input id="llmsUrl" type="text" placeholder="https://www.example.com/" aria-label="Site URL">
+          <button id="llmsBtn">Check llms.txt</button>
+          <button class="ghost" id="llmsGenBtn">Draft one from the site</button>
+        </div>
+        <div class="status" id="llmsStatus"></div>
+      </section>
+      <div id="llmsResults" class="hidden">
+        <section class="panel">
+          <div id="llmsFiles"></div>
+          <div class="subhead">Findings</div>
+          <ul class="issues" id="llmsIssues"></ul>
+          <div id="llmsLinks"></div>
+        </section>
+      </div>
+      <section class="panel hidden" id="llmsDraft">
+        <h2>Draft llms.txt</h2>
+        <p class="hint" id="llmsDraftNote"></p>
+        <textarea id="llmsText" rows="18" spellcheck="false" style="font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button id="llmsDownload">Download llms.txt</button>
+          <button class="ghost" id="llmsCopy">Copy</button>
+        </div>
+        <div class="note">Edit the draft as needed, then upload it to the site's main folder so it opens at /llms.txt. Some SEO plugins can also create and serve one for you.</div>
+      </section>
     </div>
 
     <!-- AI test -->
