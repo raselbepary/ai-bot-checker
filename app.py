@@ -980,6 +980,123 @@ def generate_llms(url):
     return {"markdown": "\n".join(out).strip() + "\n", "pages": len(uniq), "source": info["source"]}, 200
 
 
+# ---------------------------------------------------------------- projects
+_PROJ_LOCK = threading.Lock()
+
+
+def _projects_file():
+    return os.path.join(DATA_DIR, "projects.json")
+
+
+def load_projects():
+    try:
+        with open(_projects_file(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _write_projects(items):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = _projects_file() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f)
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
+    os.replace(tmp, _projects_file())
+
+
+def _json_files_newest_first(d):
+    try:
+        return sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime, reverse=True)
+    except Exception:
+        return []
+
+
+def _site_key(u):
+    parts = urllib.parse.urlsplit(u)
+    h = _bare_host(u)
+    return f"{h}:{parts.port}" if h and parts.port else h
+
+
+def projects_with_latest():
+    items = load_projects()
+    scans, cites = {}, {}
+    for p in _json_files_newest_first(_scan_dir()):
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            h = _site_key(j.get("url", ""))
+            if h and h not in scans:
+                res = j.get("results") or []
+                scans[h] = {"id": j.get("id"), "started_at": j.get("started_at"), "status": j.get("status"),
+                            "bot": j.get("bot_label"), "pages": len(res),
+                            "errors": sum(1 for r in res if r.get("level") == "error"),
+                            "warnings": sum(1 for r in res if r.get("level") == "warning")}
+        except Exception:
+            pass
+    for p in _json_files_newest_first(_cite_dir()):
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            h = _clean_domain(j.get("domain", ""))
+            if h and h not in cites:
+                ok = [r for r in (j.get("results") or []) if not r.get("error") and r.get("brand")]
+                cites[h] = {"id": j.get("id"), "started_at": j.get("started_at"), "status": j.get("status"),
+                            "answers": len(ok), "cited": sum(1 for r in ok if r["brand"].get("cited")),
+                            "named": sum(1 for r in ok if r["brand"].get("mentioned"))}
+        except Exception:
+            pass
+    for it in items:
+        it["latest"] = {"scan": scans.get(_site_key(it.get("site", ""))), "cite": cites.get(_bare_host(it.get("site", "")))}
+    return {"projects": items, "storage_ok": storage_writable()}
+
+
+def save_project(p):
+    if not storage_writable():
+        return {"error": f"The server cannot write to {DATA_DIR}, so projects can't be saved."}, 500
+    name = str(p.get("name", "")).strip()[:80]
+    if not name:
+        return {"error": "Give the project a name."}, 400
+    try:
+        site = _normalize_url(str(p.get("site", "")))
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    data = {"name": name, "site": site, "brands": _str_list(p.get("brands"), 10, 80),
+            "competitors": _str_list(p.get("competitors"), 10, 120),
+            "location": str(p.get("location", "")).strip()[:120],
+            "questions": [x for x in (str(s).strip()[:300] for s in (p.get("questions") or []) if isinstance(s, str)) if x][:10],
+            "updated_at": now}
+    with _PROJ_LOCK:
+        items = load_projects()
+        pid = str(p.get("id") or "")
+        existing = next((x for x in items if x.get("id") == pid), None) if pid else None
+        if existing:
+            existing.update(data)
+            out = existing
+        else:
+            if len(items) >= 200:
+                return {"error": "You have reached the limit of 200 projects."}, 400
+            out = dict(data, id=secrets.token_hex(5), created_at=now)
+            items.append(out)
+        items.sort(key=lambda x: x.get("name", "").lower())
+        _write_projects(items)
+    return out, 200
+
+
+def delete_project(pid):
+    with _PROJ_LOCK:
+        items = load_projects()
+        keep = [x for x in items if x.get("id") != pid]
+        if len(keep) != len(items):
+            _write_projects(keep)
+    return {"ok": True}, 200
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -1777,6 +1894,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/projects":
+            self._json(projects_with_latest())
         else:
             self._send(404, "Not found", "text/plain")
 
@@ -1824,6 +1943,12 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/projects/save":
+                body, code = save_project(payload)
+                return self._json(body, code)
+            if path == "/api/projects/delete":
+                body, code = delete_project(str(payload.get("id", "")))
+                return self._json(body, code)
             if path == "/api/cite/start":
                 body, code = start_cite(payload)
                 return self._json(body, code)
