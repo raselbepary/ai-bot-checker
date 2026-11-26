@@ -142,6 +142,7 @@ async function runCheck(){
     if (data.error){ $('#checkStatus').textContent = data.error; return; }
     LAST = data;
     try{ sessionStorage.setItem('abvc_last', JSON.stringify(data)); }catch(e){}
+    $('#answers').innerHTML = ''; $('#askStatus').textContent = '';
     renderAll();
   }catch(e){
     $('#checkStatus').textContent = 'Check failed: ' + e.message;
@@ -420,8 +421,10 @@ async function startScan(){
 
 async function pollScan(id){
   clearTimeout(scanTimer);
+  const gen = SCAN_GEN;
   try{
     const d = await api('/api/scan/status?id=' + encodeURIComponent(id));
+    if (gen !== SCAN_GEN) return;
     if (d.error){ $('#scanStatus').textContent = d.error; $('#scanBtn').disabled = false; return; }
     SCAN = d; store('abvc_scan', id);
     renderScan();
@@ -516,7 +519,7 @@ async function loadScanHistory(){
   try{
     const d = await api('/api/scan/list');
     const cur = SCAN ? SCAN.id : '';
-    const items = d.scans || [];
+    const items = (d.scans || []).filter(s => belongsToProject(s.url));
     $('#scanHistory').innerHTML = (items.length ? '<option value="">Choose a scan…</option>' : '<option value="">None yet</option>') + items.map(s => {
       let host = s.url; try{ host = new URL(s.url).hostname; }catch(e){}
       return `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(host)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total} pages${s.status === 'running' ? ' (running)' : ''}</option>`;
@@ -647,6 +650,7 @@ async function runLlms(){
     const d = await post('/api/llms', {url});
     if (d.error){ $('#llmsStatus').textContent = d.error; return; }
     LLMS = d; renderLlms();
+    if (LLMS_DRAFT_HOST && siteKeyOf(d.origin) !== LLMS_DRAFT_HOST) $('#llmsDraft').classList.add('hidden');
     $('#llmsStatus').textContent = `Checked ${d.origin} at ${d.checked_at}.`;
   }catch(e){ $('#llmsStatus').textContent = 'Check failed: ' + e.message; }
   finally{ $('#llmsBtn').disabled = false; }
@@ -680,6 +684,7 @@ async function runLlmsGen(){
     const d = await post('/api/llms/generate', {url});
     if (d.error){ $('#llmsStatus').textContent = d.error; return; }
     $('#llmsDraft').classList.remove('hidden');
+    LLMS_DRAFT_HOST = siteKeyOf(url);
     $('#llmsText').value = d.markdown;
     $('#llmsDraftNote').textContent = `Built from ${plural(d.pages, 'page')} found through ${d.source === 'links' ? 'links on the homepage' : 'the sitemap'}, using each page's title and meta description. Pages marked noindex and category or tag pages are left out; blog posts go under “Optional”. Review it before publishing.`;
     $('#llmsStatus').textContent = 'Draft ready below.';
@@ -740,8 +745,10 @@ async function startCite(){
 
 async function pollCite(id){
   clearTimeout(citeTimer);
+  const gen = CITE_GEN;
   try{
     const d = await api('/api/cite/status?id=' + encodeURIComponent(id));
+    if (gen !== CITE_GEN) return;
     if (d.error){ $('#citeStatus').textContent = d.error; $('#citeBtn').disabled = false; return; }
     CITE = d; store('abvc_cite', id);
     renderCite();
@@ -871,7 +878,7 @@ async function loadCiteHistory(){
   try{
     const d = await api('/api/cite/list');
     const cur = CITE ? CITE.id : '';
-    const items = d.runs || [];
+    const items = (d.runs || []).filter(s => belongsToProject(s.domain));
     CITE_RUNS = items; renderTrend();
     $('#citeHistory').innerHTML = (items.length ? '<option value="">Choose a test…</option>' : '<option value="">None yet</option>') + items.map(s =>
       `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.domain)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total}${s.status === 'running' ? ' (running)' : ''}</option>`).join('');
@@ -895,6 +902,11 @@ async function loadProjects(){
   if (!PROJ_STORAGE) $('#projStatus').textContent = 'Projects need writable storage on the server.';
   renderProjects();
   renderCtx();
+  validateResults();
+  if (!SCAN && load('abvc_scan')) restoreScan(load('abvc_scan'));
+  if (!CITE && load('abvc_cite')) restoreCite(load('abvc_cite'));
+  loadScanHistory();
+  loadCiteHistory();
 }
 
 function activeProject(){ return PROJECTS.find(p => p.id === $('#projectSel').value) || null; }
@@ -906,12 +918,67 @@ function renderCtx(){
     : `<span>No client selected.</span><a class="links" href="#/projects">Choose a project</a>`;
 }
 
+/* ---------------------------------------------------------------- per-client results */
+let SCAN_GEN = 0, CITE_GEN = 0, LLMS_DRAFT_HOST = '';
+function siteKeyOf(u){ u = String(u || '').trim(); return hostOf(/^https?:\/\//i.test(u) ? u : 'http://' + u); }
+function belongsToProject(u){ const p = activeProject(); return !p || !u || siteKeyOf(u) === siteKeyOf(p.site); }
+function resetCheck(){
+  LAST = null; try{ sessionStorage.removeItem('abvc_last'); }catch(e){}
+  $$('[data-empty]').forEach(el => el.classList.remove('hidden'));
+  $$('[data-full]').forEach(el => el.classList.add('hidden'));
+  $('#checkStatus').textContent = ''; $('#answers').innerHTML = ''; $('#askStatus').textContent = '';
+}
+function resetScan(){
+  SCAN_GEN++; clearTimeout(scanTimer); SCAN = null; store('abvc_scan', '');
+  $('#scanResults').classList.add('hidden'); $('#scanProgress').classList.add('hidden'); $('#stopBtn').classList.add('hidden');
+  $('#scanStatus').textContent = ''; $('#scanBtn').disabled = false;
+}
+function resetCite(){
+  CITE_GEN++; clearTimeout(citeTimer); CITE = null; store('abvc_cite', '');
+  $('#citeResults').classList.add('hidden'); $('#citeProgress').classList.add('hidden'); $('#citeStop').classList.add('hidden');
+  $('#citeStatus').textContent = ''; $('#citeBtn').disabled = false;
+  $('#qList').innerHTML = ''; $('#qActions').classList.add('hidden'); $('#qStatus').textContent = '';
+}
+function resetResults(){
+  resetCheck(); resetScan(); resetCite();
+  ACCESS = null; $('#accessResults').classList.add('hidden'); $('#accessStatus').textContent = '';
+  LLMS = null; LLMS_DRAFT_HOST = ''; $('#llmsResults').classList.add('hidden'); $('#llmsDraft').classList.add('hidden'); $('#llmsStatus').textContent = '';
+  LOGS = null; $('#logResults').classList.add('hidden'); $('#logStatus').textContent = ''; $('#logFile').value = '';
+  READY = null; $('#readyResults').classList.add('hidden'); $('#readyStatus').textContent = '';
+}
+function validateResults(){
+  if (!activeProject()) return;
+  if (LAST && !belongsToProject(LAST.url)) resetCheck();
+  if (SCAN && !belongsToProject(SCAN.url)) resetScan();
+  if (CITE && !belongsToProject(CITE.domain)) resetCite();
+}
+async function restoreScan(id){
+  const gen = SCAN_GEN;
+  try{
+    const d = await api('/api/scan/status?id=' + encodeURIComponent(id));
+    if (gen !== SCAN_GEN || d.error) return;
+    if (!belongsToProject(d.url)){ store('abvc_scan', ''); return; }
+    pollScan(id);
+  }catch(e){}
+}
+async function restoreCite(id){
+  const gen = CITE_GEN;
+  try{
+    const d = await api('/api/cite/status?id=' + encodeURIComponent(id));
+    if (gen !== CITE_GEN || d.error) return;
+    if (!belongsToProject(d.domain)){ store('abvc_cite', ''); return; }
+    pollCite(id);
+  }catch(e){}
+}
+
 function applyProject(p, openLatest){
+  const changed = (p ? p.id : '') !== (load('abvc_project') || '');
   store('abvc_project', p ? p.id : '');
   $('#projectSel').value = p ? p.id : '';
   renderProjects();
   renderCtx();
-  if (!p) return;
+  if (changed) resetResults();
+  if (!p){ if (changed){ loadScanHistory(); loadCiteHistory(); } return; }
   const site = p.site;
   [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url'], ['#readyUrl', 'abvc_ready_url']]
     .forEach(([sel, k]) => { $(sel).value = site; store(k, site); });
@@ -922,10 +989,19 @@ function applyProject(p, openLatest){
   $('#citePrompts').value = (p.questions || []).join('\n');
   const form = {}; CITE_FIELDS.forEach(f => form[f] = $('#' + f).value); store('abvc_cite_form', JSON.stringify(form));
   citeEstimate();
-  if (openLatest && p.latest){
-    if (p.latest.scan && p.latest.scan.id) pollScan(p.latest.scan.id);
-    if (p.latest.cite && p.latest.cite.id) pollCite(p.latest.cite.id);
-  }
+  if (openLatest) openLatestFor(p.id);
+  if (changed){ loadScanHistory(); loadCiteHistory(); }
+}
+async function openLatestFor(id){
+  try{
+    const d = await api('/api/projects');
+    PROJECTS = d.projects || PROJECTS;
+    renderProjects();
+    const p = PROJECTS.find(x => x.id === id);
+    if (!p || $('#projectSel').value !== id || !p.latest) return;
+    if (p.latest.scan && p.latest.scan.id && !SCAN) pollScan(p.latest.scan.id);
+    if (p.latest.cite && p.latest.cite.id && !CITE) pollCite(p.latest.cite.id);
+  }catch(e){}
 }
 $('#projectSel').onchange = () => applyProject(activeProject(), true);
 
@@ -1382,8 +1458,6 @@ async function init(){
   $('#scanBot').value = load('abvc_scan_bot') || 'gptbot';
   $('#scanUrl').value = load('abvc_scan_url') || '';
   loadScanHistory();
-  const sid = load('abvc_scan');
-  if (sid) pollScan(sid);
   const lastUrl = load('abvc_url') || load('abvc_scan_url') || '';
   $('#accessUrl').value = load('abvc_access_url') || lastUrl;
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
@@ -1394,8 +1468,6 @@ async function init(){
   }catch(e){}
   citeEstimate();
   loadCiteHistory();
-  const cid = load('abvc_cite');
-  if (cid) pollCite(cid);
   loadProjects();
   $('#signout').classList.toggle('hidden', !s.auth);
   applySettings(s);
