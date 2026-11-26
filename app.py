@@ -1365,7 +1365,8 @@ def projects_with_latest():
                 ok = [r for r in (j.get("results") or []) if not r.get("error") and r.get("brand")]
                 cites[h] = {"id": j.get("id"), "started_at": j.get("started_at"), "status": j.get("status"),
                             "answers": len(ok), "cited": sum(1 for r in ok if r["brand"].get("cited")),
-                            "named": sum(1 for r in ok if r["brand"].get("mentioned"))}
+                            "named": sum(1 for r in ok if r["brand"].get("mentioned")),
+                            "score": (j.get("summary") or cite_summary(j)).get("score")}
         except Exception:
             pass
     for it in items:
@@ -1582,7 +1583,7 @@ def list_cites():
         try:
             with open(p, encoding="utf-8") as f:
                 j = json.load(f)
-            out.append({k: j.get(k) for k in keys})
+            out.append(dict({k: j.get(k) for k in keys}, summary=j.get("summary") or cite_summary(j)))
         except Exception:
             pass
     return {"runs": out}
@@ -1606,6 +1607,9 @@ def _run_cite(job):
             r["hosts"] = hosts[:40]
             r["brand"] = _entity_in(brand, low, hosts)
             r["competitors"] = [dict(_entity_in(c, low, hosts), label=c["label"], domain=c["domain"]) for c in comps]
+            if job.get("sentiment") and r["brand"]["mentioned"]:
+                r["sentiment"], r["sentiment_reason"] = rate_sentiment(job["key"], model, job["brands"] or [job["domain"]],
+                                                                      job["domain"], r["answer"])
         return r
 
     try:
@@ -1630,6 +1634,7 @@ def _run_cite(job):
         job["error"] = f"{type(e).__name__}: {e}"
     finally:
         job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        job["summary"] = cite_summary(job)
         job["key"] = ""
         try:
             if save_cite(job):
@@ -1680,10 +1685,191 @@ def start_cite(p):
                "competitors": _str_list(p.get("competitors"), 10, 120), "prompts": prompts, "models": models,
                "engine": engine, "location": location, "status": "running", "total": len(prompts) * len(models),
                "done": 0, "started_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": "", "error": "",
-               "results": [], "stop": False, "key": key}
+               "results": [], "stop": False, "key": key, "sentiment": bool(p.get("sentiment", True))}
         CITES[job["id"]] = job
     threading.Thread(target=_run_cite, args=(job,), daemon=True).start()
     return {"id": job["id"]}, 200
+
+
+# ---------------------------------------------------------------- AI helpers: score, sentiment, question ideas, outreach briefs
+def or_chat(key, model, system, user, temperature=0.3, timeout=120):
+    payload = {"model": model, "temperature": temperature,
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(payload).encode(), headers={
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost", "X-Title": "AI Bot View Checker"})
+    try:
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.URLError as e:
+            if not isinstance(e, urllib.error.HTTPError) and "CERTIFICATE" in str(e.reason).upper():
+                resp = urllib.request.urlopen(req, timeout=timeout, context=_UNVERIFIED_SSL)
+            else:
+                raise
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", errors="replace")
+        try:
+            msg = json.loads(msg).get("error", {}).get("message", msg)
+        except Exception:
+            pass
+        return None, f"HTTP {e.code}: {msg}"[:400]
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"[:400]
+    if "error" in data:
+        err = data["error"]
+        return None, (err.get("message", str(err)) if isinstance(err, dict) else str(err))[:400]
+    try:
+        content = data["choices"][0]["message"]["content"] or ""
+    except Exception:
+        return None, "Unexpected response from OpenRouter."
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return content, None
+
+
+def extract_json(text):
+    if not text:
+        return None
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.M)
+    for pat in (r"\{.*\}", r"\[.*\]"):
+        m = re.search(pat, t, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except ValueError:
+                pass
+    return None
+
+
+def answer_score(r):
+    b = r.get("brand") or {}
+    s = 0
+    if b.get("mentioned"):
+        s += 40 + {"positive": 20, "negative": 0}.get(r.get("sentiment"), 10)
+    if b.get("cited"):
+        rank = b.get("rank") or 9
+        s += 40 if rank == 1 else 30 if rank == 2 else 20 if rank == 3 else 10
+    return s
+
+
+def cite_summary(job):
+    ok = [r for r in (job.get("results") or []) if not r.get("error") and r.get("brand")]
+    if not ok:
+        return {"score": None, "answers": 0, "cited": 0, "named": 0, "positive": 0, "negative": 0}
+    return {"score": round(sum(answer_score(r) for r in ok) / len(ok)), "answers": len(ok),
+            "cited": sum(1 for r in ok if r["brand"].get("cited")), "named": sum(1 for r in ok if r["brand"].get("mentioned")),
+            "positive": sum(1 for r in ok if r.get("sentiment") == "positive"),
+            "negative": sum(1 for r in ok if r.get("sentiment") == "negative")}
+
+
+def rate_sentiment(key, model, names, domain, answer):
+    system = ("You judge how an AI assistant's answer describes one business. Reply with JSON only.")
+    user = (f"Business: {', '.join(names)} ({domain})\n\nAnswer to judge:\n<<<\n{answer[:6000]}\n>>>\n\n"
+            "How does the answer describe this business? Positive means it is recommended or praised; negative means "
+            "it is criticised or warned against; neutral means it is only listed or mentioned.\n"
+            'Return only JSON: {"sentiment": "positive" or "neutral" or "negative", "reason": "one short sentence"}')
+    txt, err = or_chat(key, model, system, user, temperature=0, timeout=90)
+    j = extract_json(txt) if not err else None
+    if isinstance(j, dict) and j.get("sentiment") in ("positive", "neutral", "negative"):
+        return j["sentiment"], str(j.get("reason", ""))[:300]
+    return None, ""
+
+
+def _page_excerpt(url, n=4000):
+    r = http_get(url, CHROME_UA, timeout=15)
+    if r["error"] or (r["status"] or 0) >= 400 or not r["html"]:
+        return "", "", ""
+    p = PageExtractor()
+    try:
+        p.feed(r["html"])
+    except Exception:
+        pass
+    return re.sub(r"\s+", " ", p.title).strip()[:200], (p.meta.get("description") or "")[:400], p.text()[:n]
+
+
+def suggest_questions(p):
+    key = openrouter_key(None)
+    if not key:
+        return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
+    model = str(p.get("model") or "").strip()[:200]
+    if not model:
+        return {"error": "Pick a model."}, 400
+    try:
+        site = _normalize_url(str(p.get("site", "")))
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    brands = _str_list(p.get("brands"), 6, 80)
+    personas = _str_list(p.get("personas"), 6, 60)
+    location = str(p.get("location", "")).strip()[:120]
+    try:
+        count = max(4, min(20, int(p.get("count", 12))))
+    except (TypeError, ValueError):
+        count = 12
+    title, desc, text = _page_excerpt(site, 3500)
+    persona_line = (f"Spread the questions across these customer types and label each with one of them: {', '.join(personas)}."
+                    if personas else "Label each question with a short customer type, for example 'homeowner' or 'property manager'.")
+    system = "You help a marketing agency test how AI assistants answer real customer questions. Reply with JSON only."
+    user = (f"Business website: {site}\nPage title: {title or '(unknown)'}\nDescription: {desc or '(none)'}\n"
+            f"Location served: {location or 'not specified'}\nHomepage text (excerpt):\n<<<\n{text or '(the page could not be read)'}\n>>>\n\n"
+            f"Write {count} questions that real potential customers would type into an AI assistant such as ChatGPT when looking "
+            "for what this business offers. Mix intents: finding a provider, comparing options, cost, and problem or how-to "
+            "questions. Include the location in some questions if one is given. Do NOT mention the business or brand name, so the "
+            f"test shows whether AI recommends it on its own. {persona_line}\n"
+            'Return only JSON: {"questions": [{"question": "...", "persona": "...", "intent": "find a provider or compare or cost or how-to or problem"}]}')
+    txt, err = or_chat(key, model, system, user, temperature=0.7, timeout=150)
+    if err:
+        return {"error": err}, 502
+    j = extract_json(txt)
+    items = j.get("questions") if isinstance(j, dict) else j if isinstance(j, list) else None
+    if not isinstance(items, list):
+        return {"error": "The model did not return a usable list. Try again or pick another model."}, 502
+    out, seen = [], set()
+    low_brands = [b.lower() for b in brands if len(b) >= 3]
+    for it in items:
+        q = (it.get("question") if isinstance(it, dict) else it) or ""
+        q = re.sub(r"\s+", " ", str(q)).strip()[:300]
+        if not q or q.lower() in seen or any(b in q.lower() for b in low_brands):
+            continue
+        seen.add(q.lower())
+        out.append({"question": q, "persona": str(it.get("persona", ""))[:60] if isinstance(it, dict) else "",
+                    "intent": str(it.get("intent", ""))[:40] if isinstance(it, dict) else ""})
+    if not out:
+        return {"error": "No usable questions came back. Try again or pick another model."}, 502
+    return {"questions": out[:count], "model": model}, 200
+
+
+def outreach_brief(p):
+    key = openrouter_key(None)
+    if not key:
+        return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
+    model = str(p.get("model") or "").strip()[:200]
+    if not model:
+        return {"error": "Pick a model."}, 400
+    try:
+        url = _normalize_url(str(p.get("url", "")))
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    domain = _clean_domain(str(p.get("domain", "")))
+    brands = _str_list(p.get("brands"), 6, 80)
+    comps = _str_list(p.get("competitors"), 10, 120)
+    question = str(p.get("question", "")).strip()[:300]
+    ptitle, _desc, text = _page_excerpt(url, 4000)
+    title = ptitle or str(p.get("title", "")).strip()[:200]
+    system = "You write short, practical outreach briefs for a marketing agency. Plain text only, no Markdown headings."
+    user = (f"Our client: {', '.join(brands) or domain} ({domain})\n"
+            f"AI assistants cited this page when answering: \"{question}\"\n"
+            f"Page: {title or '(no title)'} - {url}\n"
+            f"Competitors named in those AI answers: {', '.join(comps) or 'none'}\n"
+            f"Page excerpt:\n<<<\n{text or '(the page could not be fetched)'}\n>>>\n\n"
+            "Write a brief with four short parts: 1) what this page is and who seems to run it, based on the excerpt; "
+            "2) why our client would fit on it; 3) the best approach, such as a listing request, a review, an expert quote, "
+            "or a correction; 4) a first outreach email under 120 words. Do not invent facts about our client: use "
+            "placeholders like [service] or [city] where details are missing.")
+    txt, err = or_chat(key, model, system, user, temperature=0.5, timeout=150)
+    if err:
+        return {"error": err}, 502
+    return {"brief": (txt or "").strip()[:6000], "model": model}, 200
 
 
 # ---------------------------------------------------------------- site scan
@@ -2269,6 +2455,12 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/questions":
+                body, code = suggest_questions(payload)
+                return self._json(body, code)
+            if path == "/api/brief":
+                body, code = outreach_brief(payload)
+                return self._json(body, code)
             if path == "/api/projects/save":
                 body, code = save_project(payload)
                 return self._json(body, code)
