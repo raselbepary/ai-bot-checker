@@ -10,7 +10,12 @@
 <div class="shell">
   <aside class="nav">
     <a class="brand" href="#/bots">AI Bot View Checker</a>
+    <div class="projpick">
+      <label for="projectSel">Project</label>
+      <select id="projectSel"><option value="">No project</option></select>
+    </div>
     <nav aria-label="Tools">
+      <a href="#/projects" data-page="projects">Projects</a>
       <a href="#/bots" data-page="bots">Bot view</a>
       <a href="#/scan" data-page="scan">Site scan</a>
       <a href="#/schema" data-page="schema">Structured data</a>
@@ -38,6 +43,46 @@
       </details>
       <div class="status" id="checkStatus"></div>
     </section>
+
+    <!-- Projects -->
+    <div class="page hidden" id="page-projects">
+      <header class="pagehead">
+        <h1>Projects</h1>
+        <p class="lede">Save each client once: website, brand names, competitors, location and questions. Choose a project in the sidebar and every page opens filled in for that client.</p>
+      </header>
+      <div class="row" style="margin-bottom:14px">
+        <button id="projNew">New project</button>
+        <span class="status" id="projStatus" style="margin:0"></span>
+      </div>
+      <section class="panel hidden" id="projForm">
+        <h2 id="projFormTitle">New project</h2>
+        <div class="grid2" style="margin-top:10px">
+          <div>
+            <label class="fld" for="pName">Client or project name</label>
+            <input id="pName" type="text" placeholder="Efficient HVAC">
+            <label class="fld" for="pSite" style="margin-top:12px">Website</label>
+            <input id="pSite" type="text" placeholder="https://www.example.com/">
+            <label class="fld" for="pBrands" style="margin-top:12px">Brand names <span class="note" style="margin:0;font-weight:400">comma-separated</span></label>
+            <input id="pBrands" type="text" placeholder="Example Company, Example Co">
+            <label class="fld" for="pComp" style="margin-top:12px">Competitors <span class="note" style="margin:0;font-weight:400">names, domains, or Name (domain.com)</span></label>
+            <input id="pComp" type="text" placeholder="Rival HVAC (rivalhvac.com), otherbrand.com">
+            <label class="fld" for="pLoc" style="margin-top:12px">Location <span class="note" style="margin:0;font-weight:400">City, Region, Country code</span></label>
+            <input id="pLoc" type="text" placeholder="Dallas, Texas, US">
+          </div>
+          <div>
+            <label class="fld" for="pQuestions">Customer questions <span class="note" style="margin:0;font-weight:400">one per line, up to 10; used by AI citations</span></label>
+            <textarea id="pQuestions" rows="12" placeholder="Best HVAC company in Dallas&#10;Who installs heat pumps near Plano, TX?"></textarea>
+          </div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button id="projSave">Save project</button>
+          <button class="ghost" id="projCancel">Cancel</button>
+          <button class="ghost danger hidden" id="projDelete">Delete project</button>
+        </div>
+        <div class="note" id="projFormNote"></div>
+      </section>
+      <div id="projList"></div>
+    </div>
 
     <!-- Bot view -->
     <div class="page" id="page-bots">
