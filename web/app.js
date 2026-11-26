@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready'].includes(p));
   const head = $('#page-' + p + ' .pagehead');
   if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
@@ -913,7 +913,7 @@ function applyProject(p, openLatest){
   renderCtx();
   if (!p) return;
   const site = p.site;
-  [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url']]
+  [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url'], ['#readyUrl', 'abvc_ready_url']]
     .forEach(([sel, k]) => { $(sel).value = site; store(k, site); });
   $('#citeDomain').value = hostOf(site);
   $('#citeBrand').value = (p.brands || []).join(', ');
@@ -1296,6 +1296,70 @@ $('#qSaveProj').onclick = async () => {
   }catch(e){ $('#qStatus').textContent = 'Could not save: ' + e.message; }
 };
 
+/* ---------------------------------------------------------------- AI readiness */
+let READY = null;
+const RSTAT = {pass: ['ok', 'Good'], warn: ['warn', 'Improve'], fail: ['bad', 'Fix']};
+$('#readyBtn').onclick = runReady;
+$('#readyUrl').addEventListener('keydown', e => { if (e.key === 'Enter') runReady(); });
+
+async function runReady(){
+  const url = $('#readyUrl').value.trim();
+  if (!url){ $('#readyStatus').textContent = 'Enter a page URL.'; return; }
+  store('abvc_ready_url', url);
+  $('#readyBtn').disabled = true;
+  $('#readyStatus').textContent = 'Fetching the page as GPTBot and reviewing it…';
+  try{
+    const d = await post('/api/readiness', {url});
+    if (d.error){ $('#readyStatus').textContent = d.error; return; }
+    READY = d; renderReady();
+    $('#readyStatus').textContent = `Reviewed ${d.final_url || d.url} at ${d.checked_at}.`;
+  }catch(e){ $('#readyStatus').textContent = 'Review failed: ' + e.message; }
+  finally{ $('#readyBtn').disabled = false; }
+}
+
+function renderReady(){
+  const d = READY, c = d.counts;
+  $('#readyResults').classList.remove('hidden');
+  $('#readySummary').innerHTML = `<span class="chip ${d.score >= 75 ? 'ok' : d.score >= 50 ? 'warn' : 'bad'}">Readiness ${d.score}/100</span>
+    <span class="chip ${c.fail ? 'bad' : 'ok'}">${plural(c.fail, 'thing')} to fix</span>
+    <span class="chip ${c.warn ? 'warn' : 'ok'}">${plural(c.warn, 'thing')} to improve</span>
+    <span class="chip ok">${c.pass} good</span>`;
+  const rank = {fail: 0, warn: 1, pass: 2};
+  const cats = [...new Set(d.checks.map(x => x.cat))];
+  $('#readyChecks').innerHTML = cats.map(cat => `<div class="rcat"><h3>${esc(cat)}</h3><ul class="issues">${
+    d.checks.filter(x => x.cat === cat).sort((a, b) => rank[a.status] - rank[b.status]).map(x =>
+      `<li><span class="chip ${RSTAT[x.status][0]}">${RSTAT[x.status][1]}</span><span><strong>${esc(x.label)}</strong><span class="where">${esc(x.detail)}</span></span></li>`).join('')}</ul></div>`).join('');
+  $('#readyIntro').innerHTML = d.intro ? `<div class="answertext">${esc(d.intro)}</div>` : '<div class="note" style="margin:0">No opening paragraph was found.</div>';
+  $('#readyOutline').innerHTML = d.outline.length
+    ? `<ul class="outline">${d.outline.map(o => `<li class="l${o.level}"><span class="chip na">H${o.level}</span><span>${esc(o.text)}</span></li>`).join('')}</ul>`
+    : '<div class="note" style="margin:0">No headings were found.</div>';
+  const prev = $('#readyModel').value;
+  $('#readyModel').innerHTML = currentModels().map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  if (prev && currentModels().includes(prev)) $('#readyModel').value = prev;
+  $('#readyAiOut').innerHTML = '';
+}
+
+$('#readyAiBtn').onclick = async () => {
+  if (!READY) return;
+  if (SETTINGS.key_source === 'none'){ $('#readyAiOut').innerHTML = '<div class="note">Add an OpenRouter key first, in <a class="links" href="#/settings">Settings</a>.</div>'; return; }
+  const model = $('#readyModel').value;
+  $('#readyAiBtn').disabled = true;
+  $('#readyAiOut').innerHTML = `<div class="note">Asking ${esc(model)} for suggestions based on the page text…</div>`;
+  try{
+    const r = await post('/api/readiness/ai', {url: READY.final_url || READY.url, model});
+    if (r.error) throw new Error(r.error);
+    $('#readyAiOut').innerHTML = `
+      ${r.main_question ? `<div class="subhead">Main question this page should answer</div><p style="margin:0">${esc(r.main_question)}</p>` : ''}
+      ${r.bluf ? `<div class="subhead">Suggested opening <a class="links" style="font-weight:400" data-copytext="rBluf">Copy</a></div><div class="answertext" id="rBluf">${esc(r.bluf)}</div>` : ''}
+      ${r.suggestions.length ? `<div class="subhead">Suggested changes</div><ul class="issues">${r.suggestions.map(x =>
+        `<li><span class="chip warn">Change</span><span><strong>${esc(x.issue)}</strong><span class="where">${esc(x.fix)}</span></span></li>`).join('')}</ul>` : ''}
+      ${r.faq.length ? `<div class="subhead">FAQ drafted from the page <a class="links" style="font-weight:400" data-copytext="rFaq">Copy</a></div><div class="answertext" id="rFaq">${esc(r.faq.map(f => 'Q: ' + f.q + '\n' + 'A: ' + f.a).join('\n\n'))}</div>` : ''}
+      <div class="note">Drafted by ${esc(r.model)} from the page's own text. Check every fact before publishing.</div>`;
+    $$('[data-copytext]').forEach(a => a.onclick = () => navigator.clipboard.writeText($('#' + a.dataset.copytext).textContent).then(() => { a.textContent = 'Copied'; }));
+  }catch(e){ $('#readyAiOut').innerHTML = `<div class="note" style="color:var(--bad)">Could not get suggestions: ${esc(e.message)}</div>`; }
+  finally{ $('#readyAiBtn').disabled = false; }
+};
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -1323,6 +1387,7 @@ async function init(){
   const lastUrl = load('abvc_url') || load('abvc_scan_url') || '';
   $('#accessUrl').value = load('abvc_access_url') || lastUrl;
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
+  $('#readyUrl').value = load('abvc_ready_url') || lastUrl;
   try{
     const form = JSON.parse(load('abvc_cite_form') || '{}');
     CITE_FIELDS.forEach(f => { if (form[f] !== undefined) $('#' + f).value = form[f]; });
