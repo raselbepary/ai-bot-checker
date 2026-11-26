@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap'].includes(p));
   const head = $('#page-' + p + ' .pagehead');
   if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
@@ -945,6 +945,7 @@ function resetResults(){
   LLMS = null; LLMS_DRAFT_HOST = ''; $('#llmsResults').classList.add('hidden'); $('#llmsDraft').classList.add('hidden'); $('#llmsStatus').textContent = '';
   LOGS = null; $('#logResults').classList.add('hidden'); $('#logStatus').textContent = ''; $('#logFile').value = '';
   READY = null; $('#readyResults').classList.add('hidden'); $('#readyStatus').textContent = '';
+  JSGAP = null; $('#jsgapResults').classList.add('hidden'); $('#jsgapStatus').textContent = '';
 }
 function validateResults(){
   if (!activeProject()) return;
@@ -980,7 +981,7 @@ function applyProject(p, openLatest){
   if (changed) resetResults();
   if (!p){ if (changed){ loadScanHistory(); loadCiteHistory(); } return; }
   const site = p.site;
-  [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url'], ['#readyUrl', 'abvc_ready_url']]
+  [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url'], ['#readyUrl', 'abvc_ready_url'], ['#jsgapUrl', 'abvc_jsgap_url']]
     .forEach(([sel, k]) => { $(sel).value = site; store(k, site); });
   $('#citeDomain').value = hostOf(site);
   $('#citeBrand').value = (p.brands || []).join(', ');
@@ -1436,6 +1437,62 @@ $('#readyAiBtn').onclick = async () => {
   finally{ $('#readyAiBtn').disabled = false; }
 };
 
+/* ---------------------------------------------------------------- JavaScript gap */
+let JSGAP = null;
+$('#jsgapBtn').onclick = runJsgap;
+$('#jsgapUrl').addEventListener('keydown', e => { if (e.key === 'Enter') runJsgap(); });
+
+async function runJsgap(){
+  const url = $('#jsgapUrl').value.trim();
+  if (!url){ $('#jsgapStatus').textContent = 'Enter a page URL.'; return; }
+  store('abvc_jsgap_url', url);
+  $('#jsgapBtn').disabled = true;
+  $('#jsgapStatus').textContent = 'Loading the page in a headless browser and comparing it with the raw HTML… this can take up to a minute.';
+  try{
+    const d = await post('/api/jsgap', {url});
+    if (d.error){ $('#jsgapStatus').textContent = d.error; return; }
+    JSGAP = d; renderJsgap();
+    $('#jsgapStatus').textContent = `Compared ${d.url} at ${d.checked_at} (browser load ${(d.render_ms / 1000).toFixed(1)} s).`;
+  }catch(e){ $('#jsgapStatus').textContent = 'Comparison failed: ' + e.message; }
+  finally{ $('#jsgapBtn').disabled = false; }
+}
+
+function renderJsgap(){
+  const d = JSGAP, r = d.raw, v = d.rendered;
+  $('#jsgapResults').classList.remove('hidden');
+  const nT = d.js_only_text.length, nN = d.js_only_numbers.length, nL = d.js_only_links.length;
+  $('#jsgapSummary').innerHTML = `
+    <span class="chip ${d.visible_pct >= 95 ? 'ok' : d.visible_pct >= 70 ? 'warn' : 'bad'}">${d.visible_pct}% of the text is visible without JavaScript</span>
+    <span class="chip ${nT ? 'warn' : 'ok'}">${plural(nT, 'text block')} only after JavaScript</span>
+    <span class="chip ${nN ? 'bad' : 'ok'}">${plural(nN, 'number')} only after JavaScript</span>
+    <span class="chip ${nL ? 'warn' : 'ok'}">${plural(nL, 'link')} added by JavaScript</span>
+    ${v.jsonld > r.jsonld ? `<span class="chip bad">${plural(v.jsonld - r.jsonld, 'structured data block')} added by JavaScript</span>` : ''}`;
+  const row = (label, a, b, isText) => {
+    const diff = String(a) !== String(b);
+    return `<tr><td><strong>${esc(label)}</strong></td><td class="${diff ? 'diff' : ''} ${isText ? '' : 'num'}">${esc(a === '' ? '–' : a)}</td><td class="${isText ? '' : 'num'}">${esc(b === '' ? '–' : b)}</td></tr>`;
+  };
+  $('#jsgapTable').innerHTML = `<thead><tr><th></th><th>Without JavaScript (what AI crawlers get)</th><th>With JavaScript (what visitors see)</th></tr></thead><tbody>
+    ${row('Words', r.words.toLocaleString(), v.words.toLocaleString())}
+    ${row('Headings', r.headings, v.headings)}
+    ${row('Links to this site', r.links, v.links)}
+    ${row('Structured data blocks', r.jsonld, v.jsonld)}
+    ${row('Title', r.title, v.title, true)}
+    ${row('Meta description', r.desc, v.desc, true)}
+    ${r.counters.length || v.counters.length ? row('Animated counters', r.counters.join(', '), v.counters.join(', '), true) : ''}
+  </tbody>`;
+  $('#jsgapNumPanel').classList.toggle('hidden', !nN);
+  $('#jsgapNums').innerHTML = `<thead><tr><th>Number</th><th>Where it appears</th></tr></thead><tbody>${
+    d.js_only_numbers.map(n => `<tr><td class="num"><strong>${esc(n.number)}</strong></td><td>…${esc(n.context)}…</td></tr>`).join('')}</tbody>`;
+  $('#jsgapTextPanel').classList.toggle('hidden', !nT);
+  $('#jsgapText').innerHTML = d.js_only_text.map(t => `<li>${esc(t)}</li>`).join('');
+  $('#jsgapHeadPanel').classList.toggle('hidden', !d.js_only_headings.length);
+  $('#jsgapHeads').innerHTML = d.js_only_headings.map(t => `<li>${esc(t)}</li>`).join('');
+  $('#jsgapLinkPanel').classList.toggle('hidden', !nL);
+  $('#jsgapLinks').innerHTML = d.js_only_links.map(u => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a></li>`).join('');
+  $('#jsgapRemovedBox').classList.toggle('hidden', !d.removed_text.length);
+  $('#jsgapRemoved').innerHTML = d.removed_text.map(t => `<li>${esc(t)}</li>`).join('');
+}
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -1462,6 +1519,7 @@ async function init(){
   $('#accessUrl').value = load('abvc_access_url') || lastUrl;
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
   $('#readyUrl').value = load('abvc_ready_url') || lastUrl;
+  $('#jsgapUrl').value = load('abvc_jsgap_url') || lastUrl;
   try{
     const form = JSON.parse(load('abvc_cite_form') || '{}');
     CITE_FIELDS.forEach(f => { if (form[f] !== undefined) $('#' + f).value = form[f]; });
