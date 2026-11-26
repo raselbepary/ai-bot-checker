@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Bot View Checker</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <a class="brand" href="#/bots">AI Bot View Checker</a>
+    <nav aria-label="Tools">
+      <a href="#/bots" data-page="bots">Bot view</a>
+      <a href="#/schema" data-page="schema">Structured data</a>
+      <a href="#/ai" data-page="ai">AI test</a>
+    </nav>
+    <nav class="nav-bottom" aria-label="Account">
+      <a href="#/settings" data-page="settings">Settings</a>
+      <a href="/logout" id="signout" class="hidden">Sign out</a>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <section class="checkbar" id="checkbar">
+      <div class="row url-row">
+        <input id="url" type="text" placeholder="https://www.example.com/page/" autocomplete="url" aria-label="Page URL">
+        <button id="checkBtn">Check page</button>
+      </div>
+      <details class="botpick">
+        <summary id="botSummary">Bots to test</summary>
+        <div class="bots" id="bots"></div>
+        <div class="links"><a id="selAll">Select all</a><a id="selNone">Clear</a></div>
+      </details>
+      <div class="status" id="checkStatus"></div>
+    </section>
+
+    <!-- Bot view -->
+    <div class="page" id="page-bots">
+      <header class="pagehead">
+        <h1>Bot view</h1>
+        <p class="lede">What each crawler receives without running JavaScript: status, robots.txt, text, and animated counters.</p>
+      </header>
+      <div class="empty" data-empty>Check a page above to see what each bot receives.</div>
+      <div class="hidden" data-full>
+        <p class="hint">Requests come from the server running this tool, with each bot's user agent. Cloudflare and some firewalls verify real bots by IP address, so a real crawler can be treated differently from this test.</p>
+        <div id="robotsLine" class="note"></div>
+        <div class="panel"><div class="tablewrap"><table id="summary"></table></div></div>
+        <h2 class="sub">Details per bot</h2>
+        <div id="details"></div>
+      </div>
+    </div>
+
+    <!-- Structured data -->
+    <div class="page hidden" id="page-schema">
+      <header class="pagehead">
+        <h1>Structured data</h1>
+        <p class="lede">The JSON-LD schema in the HTML each bot received: what AI tools can learn from it, what is broken, and what is missing.</p>
+      </header>
+      <div class="empty" data-empty>Check a page above to review its structured data.</div>
+      <div class="hidden" data-full>
+        <div class="row" style="margin-bottom:12px">
+          <label class="fld" for="schemaBot" style="margin:0">As received by</label>
+          <select id="schemaBot" style="width:auto"></select>
+        </div>
+        <div class="panel" id="schemaBody"></div>
+      </div>
+    </div>
+
+    <!-- AI test -->
+    <div class="page hidden" id="page-ai">
+      <header class="pagehead">
+        <h1>AI test</h1>
+        <p class="lede">Send the text one bot received to AI models through OpenRouter and see what they understand. Models answer only from that text; this is not their own crawler visiting your site.</p>
+      </header>
+      <div class="empty" data-empty>Check a page above first, then ask models about it.</div>
+      <div class="hidden" data-full>
+        <div class="panel">
+          <div class="grid2">
+            <div>
+              <label class="fld" for="viewBot">Send the view of</label>
+              <select id="viewBot"></select>
+              <label class="inline-check"><input type="checkbox" id="incSchema"> Also send the structured data (JSON-LD) this bot received</label>
+            </div>
+            <div>
+              <div class="fld">OpenRouter key</div>
+              <div id="aiKeyStatus" class="keystatus"></div>
+              <details class="once">
+                <summary>Use a different key for this test only</summary>
+                <input id="onceKey" type="password" placeholder="sk-or-..." autocomplete="off" aria-label="OpenRouter key for this test only">
+              </details>
+            </div>
+          </div>
+          <div class="grid2" style="margin-top:16px">
+            <div>
+              <div class="fld">Models <a class="links" href="#/settings" style="font-weight:400">Edit list</a></div>
+              <div class="modelpick" id="modelPick"></div>
+            </div>
+            <div>
+              <label class="fld" for="question">Question</label>
+              <textarea id="question" rows="5">List every statistic or number shown on this page and what each one refers to.</textarea>
+              <div class="links"><a data-q="numbers">Numbers</a><a data-q="summary">Summary</a><a data-q="company">Company facts</a><a data-q="missing">What's unclear</a></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:16px"><button id="askBtn">Ask models</button><span class="status" id="askStatus" style="margin:0"></span></div>
+        </div>
+        <div class="answers" id="answers"></div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="page hidden" id="page-settings">
+      <header class="pagehead">
+        <h1>Settings</h1>
+        <p class="lede">Saved on the server, so they work from any browser after you sign in.</p>
+      </header>
+      <section class="panel">
+        <h2>OpenRouter API key</h2>
+        <p class="hint">Needed only for the AI test. The full key is never sent back to the browser; you see a masked version.</p>
+        <div id="keyStatus" class="keystatus"></div>
+        <div class="row">
+          <input id="key" type="password" placeholder="sk-or-..." autocomplete="off" aria-label="OpenRouter API key" style="flex:1;min-width:220px">
+          <button id="saveKey">Save key</button>
+          <button class="ghost hidden" id="clearKey">Remove saved key</button>
+        </div>
+        <div class="note" id="keyNote"></div>
+      </section>
+      <section class="panel">
+        <h2>Models</h2>
+        <p class="hint">OpenRouter model IDs, one per line. They appear as choices on the AI test page.</p>
+        <textarea id="models" rows="7"></textarea>
+        <div class="row" style="margin-top:8px">
+          <input id="modelSearch" type="text" list="modelList" placeholder="Search model IDs…" style="flex:1;min-width:200px" aria-label="Search model IDs">
+          <datalist id="modelList"></datalist>
+          <button class="ghost" id="addModel">Add</button>
+          <button class="ghost" id="loadModels">Load model list</button>
+          <button id="saveModels">Save models</button>
+        </div>
+        <div class="note" id="modelNote"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
