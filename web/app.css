@@ -253,6 +253,13 @@ mark.them{background:var(--warn-bg);color:inherit;border-radius:3px;padding:0 2p
 .tbar.cur span,.tbar:hover span{opacity:1}
 .tbar em{font-style:normal;font-size:12px;color:var(--muted);margin-bottom:3px;font-variant-numeric:tabular-nums}
 
+/* ---------------------------------------------------------------- AI readiness */
+.rcat{margin-top:16px}
+.rcat h3{font-size:14px;margin:0 0 2px;color:var(--muted);font-weight:600}
+ul.outline{list-style:none;margin:0;padding:0;font-size:14px;max-height:420px;overflow:auto}
+ul.outline li{padding:4px 0;display:flex;gap:8px;align-items:baseline}
+ul.outline li.l2{padding-left:16px} ul.outline li.l3{padding-left:32px} ul.outline li.l4,ul.outline li.l5,ul.outline li.l6{padding-left:48px}
+
 /* ---------------------------------------------------------------- AI test */
 .modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .mode{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:var(--radius);padding:13px 14px;cursor:pointer;background:var(--surface)}
