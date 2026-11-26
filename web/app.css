@@ -131,6 +131,12 @@ button.chip.active{box-shadow:0 0 0 2px var(--accent)}
 .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)} .dot.na{background:var(--muted)}
 #scanTable td{font-size:13.5px}
 
+/* AI access and llms.txt */
+td .sub{display:block;color:var(--muted);font-size:12.5px}
+select.acc-choice{width:auto;padding:5px 8px}
+.filerow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:6px 0;font-size:14px}
+.filerow .note{margin:0}
+
 /* AI answers */
 .modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .mode{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px;cursor:pointer;background:var(--paper)}
