@@ -1416,6 +1416,293 @@ def delete_project(pid):
     return {"ok": True}, 200
 
 
+# ---------------------------------------------------------------- AI readiness review
+READY_SKIP = {"script", "style", "noscript", "template", "svg", "iframe", "head", "object", "canvas", "nav", "footer", "aside", "form"}
+GREETING_RE = re.compile(r"^(welcome to|in today's|are you looking|looking for|have you ever|thank you for|hello|hi there)", re.I)
+PHONE_RE = re.compile(r"(?<!\d)\+?\(?\d[\d\s().-]{8,}\d(?!\d)")
+NUMBER_RE = re.compile(r"(?<![\w.])\$?\d[\d,]*(?:\.\d+)?")
+DATE_TEXT_RE = re.compile(r"\b(updated|last updated|published|posted)\b[^.\n]{0,40}\b(19|20)\d\d\b", re.I)
+BYLINE_RE = re.compile(r"\b[Bb]y\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+")
+
+
+class ReadinessParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.skip = 0
+        self.blocks = []
+        self.cur = None
+        self.lists = 0
+        self.tables = 0
+        self.times = []
+        self.author_meta = ""
+        self.rel_author = False
+
+    def handle_starttag(self, tag, attrs):
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "meta":
+            name = (a.get("name") or a.get("property") or "").lower()
+            if name in ("author", "article:author"):
+                self.author_meta = a.get("content", "")[:120]
+            elif name in ("article:modified_time", "article:published_time"):
+                self.times.append(a.get("content", ""))
+        if tag in ("a", "link") and "author" in a.get("rel", "").lower():
+            self.rel_author = True
+        if tag in READY_SKIP:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag in ("ul", "ol"):
+            self.lists += 1
+        elif tag == "table":
+            self.tables += 1
+        elif tag == "time" and a.get("datetime"):
+            self.times.append(a["datetime"])
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li") and self.cur is None:
+            self.cur = [tag, []]
+
+    def handle_endtag(self, tag):
+        if tag in READY_SKIP:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip:
+            return
+        if self.cur and tag == self.cur[0]:
+            text = re.sub(r"\s+", " ", "".join(self.cur[1])).strip()
+            if text:
+                self.blocks.append((tag, text))
+            self.cur = None
+
+    def handle_data(self, data):
+        if not self.skip and self.cur is not None:
+            self.cur[1].append(data)
+
+
+def _words(s):
+    return len(re.findall(r"\w+", s or ""))
+
+
+def _readiness(url):
+    try:
+        url = _normalize_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400, ""
+    r = http_get(url, BOT_BY_ID["gptbot"][3])
+    if r["error"]:
+        return {"error": f"Could not fetch the page: {r['error']}"}, 502, ""
+    if (r["status"] or 0) >= 400:
+        return {"error": f"The page answered HTTP {r['status']} to GPTBot, so there is nothing to review. Check the AI access page."}, 502, ""
+    html = r["html"] or ""
+    pe = PageExtractor()
+    rp = ReadinessParser()
+    for parser in (pe, rp):
+        try:
+            parser.feed(html)
+        except Exception:
+            pass
+    text = pe.text()
+    words = _words(text)
+    title = re.sub(r"\s+", " ", pe.title).strip()
+    s = analyze_structured(html, text, url, pe.meta, pe.headings, title)
+    counters = find_counters(html)
+    bad_counters = sum(1 for c in counters if c["to"] is not None and _norm_num(c["shown"]) != _norm_num(c["to"]))
+    blocks = rp.blocks
+    heads = [(int(t[1:]), x) for t, x in blocks if t[0] == "h" and t[1:].isdigit()]
+    checks = []
+
+    def add(cat, label, status, detail):
+        checks.append({"cat": cat, "label": label, "status": status, "detail": detail})
+
+    # answer first
+    h1_idx = next((i for i, (t, _) in enumerate(blocks) if t == "h1"), -1)
+    intro, before = None, 0
+    for i, (t, x) in enumerate(blocks):
+        if i <= h1_idx:
+            continue
+        if t == "p" and _words(x) >= 8:
+            intro = x
+            break
+        before += _words(x)
+    cat = "Answer first"
+    if intro is None:
+        add(cat, "Clear opening paragraph", "fail", "No opening paragraph was found after the main heading. AI tools look for a short, direct answer near the top.")
+    else:
+        iw = _words(intro)
+        if GREETING_RE.match(intro):
+            add(cat, "Clear opening paragraph", "warn", f"The opening starts with a greeting (\"{intro[:60]}…\"). Start with a direct answer: who you are, what you do, where, and for whom.")
+        elif before > 150:
+            add(cat, "Clear opening paragraph", "warn", f"The first real paragraph comes after about {before} words of other content. Put a short summary right under the main heading.")
+        elif iw < 15:
+            add(cat, "Clear opening paragraph", "warn", f"The opening paragraph is very short ({iw} words). Two or three sentences that answer the page's main question work best.")
+        elif iw > 90:
+            add(cat, "Clear opening paragraph", "warn", f"The opening paragraph is long ({iw} words). Put the key answer in the first two sentences.")
+        else:
+            add(cat, "Clear opening paragraph", "pass", f"The page opens with a {iw}-word paragraph right after the main heading.")
+
+    # structure
+    cat = "Structure"
+    h1s = [x for lvl, x in heads if lvl == 1]
+    if not h1s:
+        add(cat, "One main heading", "fail", "No main heading (H1) was found.")
+    elif len(h1s) > 1:
+        add(cat, "One main heading", "warn", f"The page has {len(h1s)} main headings (H1). Use one that states the page's topic.")
+    else:
+        add(cat, "One main heading", "pass", f"Main heading: “{h1s[0][:90]}”.")
+    skips, prev = [], 0
+    for lvl, x in heads:
+        if prev and lvl > prev + 1:
+            skips.append((prev, lvl, x))
+        prev = lvl
+    if skips:
+        a, b, x = skips[0]
+        add(cat, "Heading levels in order", "warn", f"Heading levels skip, for example H{a} followed by H{b} (“{x[:60]}”). Keep levels in order so the outline makes sense.")
+    elif heads:
+        add(cat, "Heading levels in order", "pass", "Heading levels follow a clear order.")
+    h2 = sum(1 for lvl, _ in heads if lvl == 2)
+    if (words > 400 and h2 < 2) or (h2 == 0 and words >= 200):
+        add(cat, "Section headings", "warn", f"{'No' if not h2 else 'Only ' + str(h2)} section heading{'' if h2 == 1 else 's'} (H2) for {words:,} words. Clear sections help AI find the right part to quote.")
+    else:
+        add(cat, "Section headings", "pass", f"{h2} section headings (H2).")
+    qh = sum(1 for _, x in heads if x.rstrip().endswith("?"))
+    if qh:
+        add(cat, "Question-style headings", "pass", f"{plural_py(qh, 'heading')} phrased as {'a question' if qh == 1 else 'questions'}.")
+    elif words > 400:
+        add(cat, "Question-style headings", "warn", "No headings are phrased as questions. Questions customers ask (for example “How much does … cost?”) help AI match the page to them.")
+    paras = [x for t, x in blocks if t == "p" and _words(x) >= 8]
+    if paras:
+        longest = max(_words(x) for x in paras)
+        if longest > 150:
+            add(cat, "Readable paragraphs", "warn", f"The longest paragraph has {longest} words. Split long paragraphs so each one makes a single point.")
+        else:
+            add(cat, "Readable paragraphs", "pass", f"Paragraphs are a readable length (longest: {longest} words).")
+    if rp.lists + rp.tables:
+        add(cat, "Lists or tables", "pass", f"{plural_py(rp.lists, 'list')} and {plural_py(rp.tables, 'table')} in the content.")
+    elif words > 400:
+        add(cat, "Lists or tables", "warn", "No lists or tables in the content. Steps, features and comparisons are easier for AI to extract as lists or tables.")
+
+    # facts
+    cat = "Facts"
+    if words < 150:
+        add(cat, "Enough readable text", "fail", f"Only {words} words are readable without JavaScript.")
+    elif words < 300:
+        add(cat, "Enough readable text", "warn", f"{words} words are readable without JavaScript. Thin pages give AI little to quote.")
+    else:
+        add(cat, "Enough readable text", "pass", f"{words:,} words are readable without JavaScript.")
+    if counters:
+        if bad_counters:
+            add(cat, "Animated counters", "fail", f"{bad_counters} of {len(counters)} animated counters show their starting value to AI crawlers.")
+        else:
+            add(cat, "Animated counters", "pass", f"All {len(counters)} animated counters show their final value.")
+    nums = len(NUMBER_RE.findall(text))
+    if nums >= 3:
+        add(cat, "Concrete numbers", "pass", f"{nums} numbers in the text, such as years, counts or prices.")
+    else:
+        add(cat, "Concrete numbers", "warn", "Few concrete numbers. Specific facts such as years in business, projects completed or price ranges are what AI tends to quote.")
+    m = PHONE_RE.search(text)
+    if m and sum(ch.isdigit() for ch in m.group(0)) >= 9:
+        add(cat, "Contact details as text", "pass", f"A phone number appears as text ({m.group(0).strip()[:24]}).")
+    else:
+        add(cat, "Contact details as text", "warn", "No phone number in the page text. Keep contact details in plain text, not only in images or buttons.")
+
+    # trust and freshness
+    cat = "Trust and freshness"
+    js = json.dumps(s.get("jsonld") or [])
+    if rp.times or '"dateModified"' in js or '"datePublished"' in js or DATE_TEXT_RE.search(text):
+        add(cat, "Publish or update date", "pass", "The page shows when it was published or updated.")
+    else:
+        add(cat, "Publish or update date", "warn", "No publish or update date was found. A visible “Last updated” date and dateModified in structured data signal freshness.")
+    articleish = any(t in ARTICLE_TYPES for e in s.get("items", []) for t in e["types"]) or bool(re.search(r"/(blog|news|insights|articles?|posts?)/", url))
+    if rp.author_meta or rp.rel_author or '"author"' in js or BYLINE_RE.search(text):
+        add(cat, "Author shown", "pass", "The page names an author.")
+    elif articleish:
+        add(cat, "Author shown", "warn", "No author was found on this article. A named author with a short bio builds trust.")
+    if s.get("items"):
+        errs = (s.get("counts") or {}).get("error", 0)
+        add(cat, "Structured data", "warn" if errs else "pass",
+            f"Types: {', '.join(s['types'][:6])}." + (f" {plural_py(errs, 'error')} found; see the Structured data page." if errs else ""))
+    else:
+        add(cat, "Structured data", "warn", "No structured data. Organization or LocalBusiness schema confirms who you are.")
+
+    # basics
+    cat = "Basics"
+    tl = len(title)
+    if not tl:
+        add(cat, "Page title", "fail", "The page has no title.")
+    elif tl > 65:
+        add(cat, "Page title", "warn", f"The title is {tl} characters. Around 60 or fewer avoids it being cut off.")
+    elif tl < 15:
+        add(cat, "Page title", "warn", f"The title is only {tl} characters. Describe the page's topic and your brand.")
+    else:
+        add(cat, "Page title", "pass", f"“{title[:80]}”")
+    desc = pe.meta.get("description", "")
+    add(cat, "Meta description", "pass" if desc else "warn", desc[:160] if desc else "No meta description. A one-sentence summary helps search and AI tools describe the page.")
+    robots = (pe.meta.get("robots", "") + " " + (r["headers"].get("x-robots-tag", "") or "")).lower()
+    if "noindex" in robots:
+        add(cat, "Can be indexed", "fail", "The page is marked noindex, so search engines and AI search may leave it out.")
+    else:
+        add(cat, "Can be indexed", "pass", "The page can be indexed.")
+    if pe.images:
+        add(cat, "Image descriptions", "warn" if pe.images_no_alt else "pass",
+            f"{pe.images_no_alt} of {plural_py(pe.images, 'image')} {'has' if pe.images_no_alt == 1 else 'have'} no alt text." if pe.images_no_alt
+            else ("The image has alt text." if pe.images == 1 else f"All {pe.images} images have alt text."))
+    host = _bare_host(url)
+    internal = len({h for h in (urllib.parse.urljoin(r["final_url"] or url, x) for x in HREF_RE.findall(html)) if _bare_host(h) == host})
+    add(cat, "Internal links", "pass" if internal >= 3 else "warn",
+        f"{internal} links to other pages on the site." if internal >= 3 else "Few links to other pages on the site. Linking related pages helps crawlers find and connect your content.")
+
+    counts = {k: sum(1 for c in checks if c["status"] == k) for k in ("pass", "warn", "fail")}
+    score = round(100 * (counts["pass"] + 0.5 * counts["warn"]) / max(1, len(checks)))
+    result = {"url": url, "final_url": r["final_url"], "score": score, "counts": counts, "checks": checks,
+              "outline": [{"level": lvl, "text": x[:160]} for lvl, x in heads[:80]], "intro": intro or "", "words": words,
+              "title": title, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return result, 200, text
+
+
+def plural_py(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def review_readiness(url):
+    res, code, _ = _readiness(url)
+    return res, code
+
+
+def readiness_ai(p):
+    key = openrouter_key(None)
+    if not key:
+        return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
+    model = str(p.get("model") or "").strip()[:200]
+    if not model:
+        return {"error": "Pick a model."}, 400
+    res, code, text = _readiness(str(p.get("url", "")))
+    if code != 200:
+        return res, code
+    outline = "\n".join(f"{'  ' * (o['level'] - 1)}H{o['level']}: {o['text']}" for o in res["outline"][:40]) or "(no headings)"
+    problems = "\n".join(f"- {c['label']}: {c['detail']}" for c in res["checks"] if c["status"] != "pass") or "- none"
+    system = "You are an editor who makes web pages easy for AI assistants to understand and quote. Reply with JSON only."
+    user = (f"Page: {res['final_url'] or res['url']}\nTitle: {res['title']}\nOutline:\n{outline}\n\nProblems found:\n{problems}\n\n"
+            f"Page text as AI crawlers read it (excerpt):\n<<<\n{text[:9000]}\n>>>\n\n"
+            "Using ONLY facts found in the page text (never invent numbers, names, prices or claims; write [placeholder] "
+            "where a needed fact is missing), return JSON:\n"
+            '{"main_question": "the main question this page should answer", '
+            '"bluf": "a 2-3 sentence opening that answers it directly", '
+            '"suggestions": [{"issue": "short name", "fix": "specific change, with rewritten text where useful"}], '
+            '"faq": [{"q": "a question a customer would ask", "a": "a short answer taken from the page"}]}\n'
+            "Give 3 to 6 suggestions and 3 to 5 FAQ items.")
+    txt, err = or_chat(key, model, system, user, temperature=0.4, timeout=180)
+    if err:
+        return {"error": err}, 502
+    j = extract_json(txt)
+    if not isinstance(j, dict):
+        return {"error": "The model did not return usable suggestions. Try again or pick another model."}, 502
+    sug = [{"issue": str(x.get("issue", ""))[:120], "fix": str(x.get("fix", ""))[:1200]}
+           for x in (j.get("suggestions") or []) if isinstance(x, dict) and (x.get("issue") or x.get("fix"))][:8]
+    faq = [{"q": str(x.get("q", ""))[:300], "a": str(x.get("a", ""))[:800]}
+           for x in (j.get("faq") or []) if isinstance(x, dict) and x.get("q")][:6]
+    return {"main_question": str(j.get("main_question", ""))[:300], "bluf": str(j.get("bluf", ""))[:1200],
+            "suggestions": sug, "faq": faq, "model": model}, 200
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -2455,6 +2742,12 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/readiness":
+                body, code = review_readiness(payload.get("url", ""))
+                return self._json(body, code)
+            if path == "/api/readiness/ai":
+                body, code = readiness_ai(payload)
+                return self._json(body, code)
             if path == "/api/questions":
                 body, code = suggest_questions(payload)
                 return self._json(body, code)
