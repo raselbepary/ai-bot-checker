@@ -137,6 +137,16 @@ select.acc-choice{width:auto;padding:5px 8px}
 .filerow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:6px 0;font-size:14px}
 .filerow .note{margin:0}
 
+/* AI citations */
+button.cell{background:none;border:0;padding:0;cursor:pointer;font:inherit}
+ol.sources{margin:0;padding-left:22px;font-size:13.5px}
+ol.sources li{margin:3px 0;word-break:break-word}
+ol.sources li.mine{background:var(--ok-bg);border-radius:4px;padding:0 4px}
+ol.sources li.comp{background:var(--warn-bg);border-radius:4px;padding:0 4px}
+.answertext{white-space:pre-wrap;font-size:14px;background:var(--code);border:1px solid var(--line);border-radius:7px;padding:12px;max-height:380px;overflow:auto}
+#citeMatrix td,#citeMatrix th{font-size:13.5px}
+#citeMatrix td:first-child{min-width:220px}
+
 /* AI answers */
 .modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .mode{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px;cursor:pointer;background:var(--paper)}
