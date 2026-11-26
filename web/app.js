@@ -34,6 +34,8 @@ function route(){
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
   $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs'].includes(p));
+  const head = $('#page-' + p + ' .pagehead');
+  if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -892,14 +894,23 @@ async function loadProjects(){
   $('#projNew').disabled = !PROJ_STORAGE;
   if (!PROJ_STORAGE) $('#projStatus').textContent = 'Projects need writable storage on the server.';
   renderProjects();
+  renderCtx();
 }
 
 function activeProject(){ return PROJECTS.find(p => p.id === $('#projectSel').value) || null; }
+function renderCtx(){
+  const el = $('#ctx'); if (!el) return;
+  const p = activeProject();
+  el.innerHTML = p
+    ? `<span class="ctx-dot" aria-hidden="true"></span><span>Working on <strong>${esc(p.name)}</strong></span><span class="ctx-site">${esc(hostOf(p.site) || p.site)}</span><a class="links" href="#/projects">Change</a>`
+    : `<span>No client selected.</span><a class="links" href="#/projects">Choose a project</a>`;
+}
 
 function applyProject(p, openLatest){
   store('abvc_project', p ? p.id : '');
   $('#projectSel').value = p ? p.id : '';
   renderProjects();
+  renderCtx();
   if (!p) return;
   const site = p.site;
   [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url']]
