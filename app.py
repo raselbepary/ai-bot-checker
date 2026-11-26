@@ -980,6 +980,277 @@ def generate_llms(url):
     return {"markdown": "\n".join(out).strip() + "\n", "pages": len(uniq), "source": info["source"]}, 200
 
 
+# ---------------------------------------------------------------- AI citations
+CITES = {}
+_CITE_LOCK = threading.Lock()
+SEARCH_ENGINES = ("auto", "native", "exa", "parallel", "perplexity", "firecrawl")
+URL_IN_TEXT_RE = re.compile(r"https?://[^\s)\]>\"'<]+")
+CITE_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+
+
+def _host(u):
+    h = (urllib.parse.urlsplit(u).hostname or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
+def _clean_domain(d):
+    d = (d or "").strip().lower()
+    if not d:
+        return ""
+    if "://" not in d:
+        d = "http://" + d
+    return _host(d)
+
+
+def _domain_match(host, domain):
+    return bool(host) and bool(domain) and (host == domain or host.endswith("." + domain))
+
+
+def _parse_entity(entry):
+    entry = entry.strip()
+    m = re.match(r"^(.*?)\s*\(([^)]+)\)\s*$", entry)
+    if m:
+        return {"label": entry, "names": [m.group(1).strip()] if m.group(1).strip() else [], "domain": _clean_domain(m.group(2))}
+    if "." in entry and " " not in entry:
+        return {"label": entry, "names": [], "domain": _clean_domain(entry)}
+    return {"label": entry, "names": [entry], "domain": ""}
+
+
+def _entity_in(entity, text_low, hosts):
+    rank = None
+    if entity["domain"]:
+        rank = next((i + 1 for i, h in enumerate(hosts) if _domain_match(h, entity["domain"])), None)
+    mentioned = any(n and re.search(r"(?<!\w)" + re.escape(n.lower()) + r"(?!\w)", text_low) for n in entity["names"])
+    if entity["domain"] and entity["domain"] in text_low:
+        mentioned = True
+    return {"mentioned": bool(mentioned), "cited": rank is not None, "rank": rank}
+
+
+def _usage_count(usage, word):
+    n = 0
+    for k in ("server_tool_use", "server_tool_use_details"):
+        v = (usage or {}).get(k)
+        if isinstance(v, dict):
+            n += sum(int(x) for kk, x in v.items() if word in kk and isinstance(x, (int, float)))
+    return n
+
+
+def ask_search(key, model, prompt, engine, location):
+    params = {"engine": engine, "max_uses": 3, "max_results": 8}
+    if location:
+        params["user_location"] = dict({"type": "approximate"}, **location)
+    payload = {"model": model, "temperature": 0.3,
+               "messages": [{"role": "system", "content": "You are a helpful assistant. Search the web to answer with current information, and cite your sources."},
+                            {"role": "user", "content": prompt}],
+               "tools": [{"type": "openrouter:web_search", "parameters": params}]}
+    req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(payload).encode(), headers={
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost", "X-Title": "AI Bot View Checker"})
+    t0 = time.time()
+    try:
+        try:
+            resp = urllib.request.urlopen(req, timeout=240)
+        except urllib.error.URLError as e:
+            if not isinstance(e, urllib.error.HTTPError) and "CERTIFICATE" in str(e.reason).upper():
+                resp = urllib.request.urlopen(req, timeout=240, context=_UNVERIFIED_SSL)
+            else:
+                raise
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", errors="replace")
+        try:
+            msg = json.loads(msg).get("error", {}).get("message", msg)
+        except Exception:
+            pass
+        if e.code == 403:
+            msg += " Check that Web Search, and this engine, are allowed on OpenRouter's Tools page."
+        elif e.code in (400, 404):
+            msg += " This model may not support tool calling or this search engine; try another."
+        return {"error": f"HTTP {e.code}: {msg}"[:600], "ms": int((time.time() - t0) * 1000)}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"[:600], "ms": int((time.time() - t0) * 1000)}
+    if "error" in data:
+        err = data["error"]
+        return {"error": (err.get("message", str(err)) if isinstance(err, dict) else str(err))[:600],
+                "ms": int((time.time() - t0) * 1000)}
+    try:
+        msg = data["choices"][0]["message"]
+    except Exception:
+        return {"error": "Unexpected response from OpenRouter.", "ms": int((time.time() - t0) * 1000)}
+    content = msg.get("content") or ""
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    cites, seen = [], set()
+    for a in msg.get("annotations") or []:
+        if not isinstance(a, dict):
+            continue
+        c = a.get("url_citation") if isinstance(a.get("url_citation"), dict) else a
+        u = c.get("url")
+        if isinstance(u, str) and u.startswith(("http://", "https://")) and u not in seen:
+            seen.add(u)
+            cites.append({"url": u, "title": str(c.get("title") or "")[:200]})
+    text_links = [u.rstrip(".,;:") for u in URL_IN_TEXT_RE.findall(content)]
+    usage = data.get("usage") or {}
+    return {"answer": content[:8000], "citations": cites[:40], "text_links": list(dict.fromkeys(text_links))[:40],
+            "searches": _usage_count(usage, "search"), "tokens": usage.get("total_tokens"),
+            "ms": int((time.time() - t0) * 1000)}
+
+
+def _cite_public(job):
+    return {k: v for k, v in job.items() if k not in ("stop", "key")}
+
+
+def _cite_dir():
+    return os.path.join(DATA_DIR, "cites")
+
+
+def save_cite(job):
+    if not storage_writable():
+        return False
+    d = _cite_dir()
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, job["id"] + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(_cite_public(job), f)
+    os.replace(tmp, os.path.join(d, job["id"] + ".json"))
+    files = sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime, reverse=True)
+    for old in files[50:]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+    return True
+
+
+def load_cite(cite_id):
+    job = CITES.get(cite_id)
+    if job:
+        return _cite_public(job)
+    if not CITE_ID_RE.match(cite_id or ""):
+        return None
+    try:
+        with open(os.path.join(_cite_dir(), cite_id + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def list_cites():
+    keys = ("id", "domain", "status", "total", "done", "started_at")
+    out = [{k: j.get(k) for k in keys} for j in list(CITES.values()) if j["status"] == "running"]
+    try:
+        d = _cite_dir()
+        files = sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime, reverse=True)[:30]
+    except Exception:
+        files = []
+    for p in files:
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            out.append({k: j.get(k) for k in keys})
+        except Exception:
+            pass
+    return {"runs": out}
+
+
+def _run_cite(job):
+    brand = {"label": job["domain"], "names": job["brands"], "domain": job["domain"]}
+    comps = [_parse_entity(c) for c in job["competitors"]]
+
+    def one(task):
+        prompt, model = task
+        r = ask_search(job["key"], model, prompt, job["engine"], job["location"])
+        r.update({"prompt": prompt, "model": model})
+        if not r.get("error"):
+            hosts = []
+            for u in [c["url"] for c in r["citations"]] + r["text_links"]:
+                h = _host(u)
+                if h and h not in hosts:
+                    hosts.append(h)
+            low = r["answer"].lower()
+            r["hosts"] = hosts[:40]
+            r["brand"] = _entity_in(brand, low, hosts)
+            r["competitors"] = [dict(_entity_in(c, low, hosts), label=c["label"], domain=c["domain"]) for c in comps]
+        return r
+
+    try:
+        tasks = [(p, m) for p in job["prompts"] for m in job["models"]]
+        job["total"] = len(tasks)
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futs = {ex.submit(one, t): t for t in tasks}
+            for f in as_completed(futs):
+                try:
+                    job["results"].append(f.result())
+                except Exception as e:
+                    p, m = futs[f]
+                    job["results"].append({"prompt": p, "model": m, "error": f"{type(e).__name__}: {e}"})
+                job["done"] += 1
+                if job["stop"]:
+                    for other in futs:
+                        other.cancel()
+                    break
+        job["status"] = "stopped" if job["stop"] else "finished"
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        job["key"] = ""
+        try:
+            if save_cite(job):
+                CITES.pop(job["id"], None)
+        except Exception:
+            pass
+        done = [k for k, j in CITES.items() if j["status"] != "running"]
+        for k in done[:-5]:
+            CITES.pop(k, None)
+
+
+def _str_list(v, max_items, max_len):
+    if isinstance(v, str):
+        v = re.split(r"[\n,]", v)
+    if not isinstance(v, list):
+        return []
+    out = []
+    for x in v:
+        x = str(x).strip()[:max_len]
+        if x and x not in out:
+            out.append(x)
+    return out[:max_items]
+
+
+def start_cite(p):
+    key = openrouter_key(p.get("key"))
+    if not key:
+        return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
+    domain = _clean_domain(str(p.get("domain", "")))
+    if not domain or "." not in domain:
+        return {"error": "Enter your site's domain, like example.com."}, 400
+    prompts = [x for x in (str(s).strip()[:300] for s in (p.get("prompts") or []) if isinstance(s, str)) if x][:10]
+    if not prompts:
+        return {"error": "Add at least one question."}, 400
+    models = _str_list(p.get("models"), 6, 200)
+    if not models:
+        return {"error": "Pick at least one model."}, 400
+    engine = p.get("engine") if p.get("engine") in SEARCH_ENGINES else "auto"
+    location = None
+    loc = p.get("location")
+    if isinstance(loc, dict):
+        location = {k: str(loc.get(k, "")).strip()[:60] for k in ("city", "region", "country") if str(loc.get(k, "")).strip()}
+        location = location or None
+    with _CITE_LOCK:
+        if any(j["status"] == "running" for j in CITES.values()):
+            return {"error": "A citation test is already running. Wait for it to finish, or stop it first."}, 409
+        job = {"id": secrets.token_hex(6), "domain": domain, "brands": _str_list(p.get("brands"), 10, 80),
+               "competitors": _str_list(p.get("competitors"), 10, 120), "prompts": prompts, "models": models,
+               "engine": engine, "location": location, "status": "running", "total": len(prompts) * len(models),
+               "done": 0, "started_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": "", "error": "",
+               "results": [], "stop": False, "key": key}
+        CITES[job["id"]] = job
+    threading.Thread(target=_run_cite, args=(job,), daemon=True).start()
+    return {"id": job["id"]}, 200
+
+
 # ---------------------------------------------------------------- site scan
 SCANS = {}
 _SCAN_LOCK = threading.Lock()
@@ -1500,6 +1771,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Scan not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/scan/list":
             self._json(list_scans())
+        elif path == "/api/cite/status":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            job = load_cite((q.get("id") or [""])[0])
+            self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
+        elif path == "/api/cite/list":
+            self._json(list_cites())
         else:
             self._send(404, "Not found", "text/plain")
 
@@ -1547,6 +1824,14 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/cite/start":
+                body, code = start_cite(payload)
+                return self._json(body, code)
+            if path == "/api/cite/stop":
+                job = CITES.get(str(payload.get("id", "")))
+                if job and job["status"] == "running":
+                    job["stop"] = True
+                return self._json({"ok": True})
             if path == "/api/access":
                 body, code = check_access(payload.get("url", ""))
                 return self._json(body, code)
