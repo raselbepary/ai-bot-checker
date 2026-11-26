@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects'].includes(p));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -867,6 +867,142 @@ async function loadCiteHistory(){
   }catch(e){}
 }
 
+/* ---------------------------------------------------------------- projects */
+let PROJECTS = [], PROJ_STORAGE = true, EDITING = null;
+const splitList = v => v.split(',').map(s => s.trim()).filter(Boolean);
+
+async function loadProjects(){
+  try{
+    const d = await api('/api/projects');
+    PROJECTS = d.projects || [];
+    PROJ_STORAGE = d.storage_ok !== false;
+  }catch(e){ PROJECTS = []; }
+  const active = load('abvc_project') || '';
+  $('#projectSel').innerHTML = '<option value="">No project</option>' + PROJECTS.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  $('#projectSel').value = PROJECTS.some(p => p.id === active) ? active : '';
+  $('#projNew').disabled = !PROJ_STORAGE;
+  if (!PROJ_STORAGE) $('#projStatus').textContent = 'Projects need writable storage on the server.';
+  renderProjects();
+}
+
+function activeProject(){ return PROJECTS.find(p => p.id === $('#projectSel').value) || null; }
+
+function applyProject(p, openLatest){
+  store('abvc_project', p ? p.id : '');
+  $('#projectSel').value = p ? p.id : '';
+  renderProjects();
+  if (!p) return;
+  const site = p.site;
+  [['#url', 'abvc_url'], ['#scanUrl', 'abvc_scan_url'], ['#accessUrl', 'abvc_access_url'], ['#llmsUrl', 'abvc_llms_url']]
+    .forEach(([sel, k]) => { $(sel).value = site; store(k, site); });
+  $('#citeDomain').value = hostOf(site);
+  $('#citeBrand').value = (p.brands || []).join(', ');
+  $('#citeComp').value = (p.competitors || []).join(', ');
+  $('#citeLocation').value = p.location || '';
+  $('#citePrompts').value = (p.questions || []).join('\n');
+  const form = {}; CITE_FIELDS.forEach(f => form[f] = $('#' + f).value); store('abvc_cite_form', JSON.stringify(form));
+  citeEstimate();
+  if (openLatest && p.latest){
+    if (p.latest.scan && p.latest.scan.id) pollScan(p.latest.scan.id);
+    if (p.latest.cite && p.latest.cite.id) pollCite(p.latest.cite.id);
+  }
+}
+$('#projectSel').onchange = () => applyProject(activeProject(), true);
+
+function renderProjects(){
+  const box = $('#projList');
+  if (!PROJECTS.length){
+    box.innerHTML = '<div class="empty">No projects yet. Create one for each client, and every page will fill in for them automatically.</div>';
+    return;
+  }
+  const active = $('#projectSel').value;
+  const pct = (n, t) => t ? Math.round(n / t * 100) + '%' : '–';
+  box.innerHTML = `<div class="projcards">${PROJECTS.map(p => {
+    const s = p.latest && p.latest.scan, c = p.latest && p.latest.cite;
+    const scanHtml = s
+      ? `<div class="chips"><span class="chip ${s.errors ? 'bad' : 'ok'}">${plural(s.errors, 'error page')}</span><span class="chip ${s.warnings ? 'warn' : 'ok'}">${plural(s.warnings, 'warning page')}</span><span class="chip na">${plural(s.pages, 'page')}</span></div><span class="note" style="margin:0">${esc((s.started_at || '').slice(0, 16))}, as ${esc(s.bot || '')}</span>`
+      : '<span class="note" style="margin:0">Not scanned yet</span>';
+    const citeHtml = c
+      ? `<div class="chips"><span class="chip ${c.cited ? 'ok' : 'bad'}">Cited ${pct(c.cited, c.answers)}</span><span class="chip ${c.named ? 'ok' : 'warn'}">Named ${pct(c.named, c.answers)}</span><span class="chip na">${plural(c.answers, 'answer')}</span></div><span class="note" style="margin:0">${esc((c.started_at || '').slice(0, 16))}</span>`
+      : '<span class="note" style="margin:0">No test yet</span>';
+    return `<article class="projcard ${p.id === active ? 'active' : ''}">
+      <header><h3>${esc(p.name)}</h3><span class="sub">${esc(p.site)}</span></header>
+      <dl class="kv">
+        <dt>Site scan</dt><dd>${scanHtml}</dd>
+        <dt>AI citations</dt><dd>${citeHtml}</dd>
+        <dt>Setup</dt><dd>${plural((p.competitors || []).length, 'competitor')}, ${plural((p.questions || []).length, 'question')}${p.location ? ', ' + esc(p.location) : ''}</dd>
+      </dl>
+      <div class="row actions">
+        ${p.id === active ? '<span class="chip ok">In use</span>' : `<button class="ghost" data-use="${esc(p.id)}">Use this project</button>`}
+        <a class="links" data-go="${esc(p.id)}" data-page="bots">Bot view</a>
+        <a class="links" data-go="${esc(p.id)}" data-page="scan">Site scan</a>
+        <a class="links" data-go="${esc(p.id)}" data-page="cite">AI citations</a>
+        <a class="links" data-edit="${esc(p.id)}">Edit</a>
+      </div>
+    </article>`;
+  }).join('')}</div>`;
+  $$('[data-use]').forEach(b => b.onclick = () => applyProject(PROJECTS.find(p => p.id === b.dataset.use), true));
+  $$('[data-go]').forEach(a => a.onclick = () => {
+    const p = PROJECTS.find(x => x.id === a.dataset.go);
+    if (p && p.id !== $('#projectSel').value) applyProject(p, true);
+    location.hash = '#/' + a.dataset.page;
+  });
+  $$('[data-edit]').forEach(a => a.onclick = () => openProjectForm(PROJECTS.find(p => p.id === a.dataset.edit)));
+}
+
+function openProjectForm(p){
+  EDITING = p || null;
+  $('#projForm').classList.remove('hidden');
+  $('#projFormTitle').textContent = p ? `Edit ${p.name}` : 'New project';
+  $('#projDelete').classList.toggle('hidden', !p);
+  $('#projFormNote').textContent = '';
+  if (p){
+    $('#pName').value = p.name; $('#pSite').value = p.site;
+    $('#pBrands').value = (p.brands || []).join(', '); $('#pComp').value = (p.competitors || []).join(', ');
+    $('#pLoc').value = p.location || ''; $('#pQuestions').value = (p.questions || []).join('\n');
+  } else if ($('#projectSel').value){
+    ['#pName', '#pSite', '#pBrands', '#pComp', '#pLoc', '#pQuestions'].forEach(s => $(s).value = '');
+  } else {
+    $('#pName').value = '';
+    $('#pSite').value = $('#url').value.trim() || ($('#citeDomain').value.trim() ? 'https://' + $('#citeDomain').value.trim() : '');
+    $('#pBrands').value = $('#citeBrand').value; $('#pComp').value = $('#citeComp').value;
+    $('#pLoc').value = $('#citeLocation').value; $('#pQuestions').value = $('#citePrompts').value;
+    if ($('#pSite').value || $('#pBrands').value) $('#projFormNote').textContent = 'Filled in from what you last used. Change anything before saving.';
+  }
+  $('#projForm').scrollIntoView({behavior: 'smooth', block: 'start'});
+  $('#pName').focus();
+}
+$('#projNew').onclick = () => openProjectForm(null);
+$('#projCancel').onclick = () => { $('#projForm').classList.add('hidden'); EDITING = null; };
+$('#projSave').onclick = async () => {
+  const questions = $('#pQuestions').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!$('#pName').value.trim()){ $('#projFormNote').textContent = 'Give the project a name.'; return; }
+  if (!$('#pSite').value.trim()){ $('#projFormNote').textContent = 'Add the website address.'; return; }
+  if (questions.length > 10){ $('#projFormNote').textContent = 'Use up to 10 questions.'; return; }
+  $('#projSave').disabled = true;
+  try{
+    const d = await post('/api/projects/save', {id: EDITING ? EDITING.id : '', name: $('#pName').value, site: $('#pSite').value,
+      brands: splitList($('#pBrands').value), competitors: splitList($('#pComp').value), location: $('#pLoc').value, questions});
+    if (d.error){ $('#projFormNote').textContent = d.error; return; }
+    const wasActive = EDITING && EDITING.id === $('#projectSel').value;
+    $('#projForm').classList.add('hidden'); EDITING = null;
+    await loadProjects();
+    const saved = PROJECTS.find(p => p.id === d.id);
+    if (saved && (wasActive || !$('#projectSel').value)) applyProject(saved, false);
+    $('#projStatus').textContent = `Saved ${d.name}.`;
+  }catch(e){ $('#projFormNote').textContent = 'Could not save: ' + e.message; }
+  finally{ $('#projSave').disabled = false; }
+};
+$('#projDelete').onclick = async () => {
+  if (!EDITING || !confirm(`Delete the project "${EDITING.name}"? Saved scans and tests are kept.`)) return;
+  const id = EDITING.id;
+  try{ await post('/api/projects/delete', {id}); }catch(e){}
+  if ($('#projectSel').value === id) store('abvc_project', '');
+  $('#projForm').classList.add('hidden'); EDITING = null;
+  await loadProjects();
+  $('#projStatus').textContent = 'Project deleted.';
+};
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -902,6 +1038,7 @@ async function init(){
   loadCiteHistory();
   const cid = load('abvc_cite');
   if (cid) pollCite(cid);
+  loadProjects();
   $('#signout').classList.toggle('hidden', !s.auth);
   applySettings(s);
 }
