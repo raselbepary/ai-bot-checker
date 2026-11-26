@@ -22,12 +22,14 @@ Environment variables
 No extra packages needed: uses only Python's standard library.
 """
 import base64
+import gzip
 import hashlib
 import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import sys
@@ -38,7 +40,8 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import unescape as html_unescape
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -192,6 +195,11 @@ def http_get(url, ua, timeout=TIMEOUT, accept="text/html,application/xhtml+xml,a
         out["final_url"] = resp.geturl() if hasattr(resp, "geturl") else url
         out["headers"] = {k.lower(): v for k, v in resp.headers.items()} if resp.headers else {}
         raw = resp.read(MAX_BYTES)
+        if raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
         out["bytes"] = len(raw)
         charset = None
         try:
@@ -732,6 +740,260 @@ def run_check(url, bot_ids):
     return {"url": url, "robots": robots_info, "results": results, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
+# ---------------------------------------------------------------- site scan
+SCANS = {}
+_SCAN_LOCK = threading.Lock()
+SCAN_MAX_PAGES = 200
+SCAN_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+SKIP_EXT_RE = re.compile(r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|zip|gz|rar|mp4|mp3|webm|mov|css|js|json|xml|txt|csv|docx?|xlsx?|pptx?)$", re.I)
+LOC_RE = re.compile(r"<loc>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</loc>", re.I | re.S)
+HREF_RE = re.compile(r'<a\b[^>]*?\bhref\s*=\s*["\']([^"\'#]+)', re.I)
+
+
+def _bare_host(u):
+    h = (urllib.parse.urlsplit(u).hostname or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
+def _page_like(u):
+    p = urllib.parse.urlsplit(u)
+    return p.scheme in ("http", "https") and not SKIP_EXT_RE.search(p.path)
+
+
+def _is_sitemap(body):
+    return "<urlset" in body or "<sitemapindex" in body
+
+
+def discover_urls(start_url, limit):
+    parts = urllib.parse.urlsplit(start_url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    host = _bare_host(start_url)
+    given_sitemap = bool(re.search(r"\.xml(\.gz)?$", parts.path, re.I))
+    if given_sitemap:
+        queue = [start_url]
+    else:
+        queue = []
+        r = http_get(origin + "/robots.txt", CHROME_UA, accept="text/plain,*/*")
+        if r["status"] == 200 and r["html"]:
+            queue = re.findall(r"(?im)^\s*sitemap\s*:\s*(\S+)", r["html"])
+        if not queue:
+            for cand in (origin + "/sitemap_index.xml", origin + "/sitemap.xml", origin + "/wp-sitemap.xml"):
+                c = http_get(cand, CHROME_UA, accept="application/xml,text/xml,*/*")
+                if c["status"] == 200 and _is_sitemap(c["html"] or ""):
+                    queue = [cand]
+                    break
+    urls, seen, used = [], set(), []
+    while queue and len(seen) < 40 and len(urls) < SCAN_MAX_PAGES * 5:
+        sm = queue.pop(0)
+        if sm in seen:
+            continue
+        seen.add(sm)
+        r = http_get(sm, CHROME_UA, accept="application/xml,text/xml,*/*")
+        body = r["html"] or ""
+        if r["status"] != 200 or not _is_sitemap(body):
+            continue
+        used.append(sm)
+        locs = [html_unescape(x).strip() for x in LOC_RE.findall(body)]
+        if "<sitemapindex" in body:
+            children = [x for x in locs if _bare_host(x) == host]
+            children.sort(key=lambda x: 0 if "page" in x.lower() else 1)
+            queue = children + queue
+        else:
+            urls += [u for u in locs if _bare_host(u) == host and _page_like(u)]
+    urls = list(dict.fromkeys(u.split("#")[0] for u in urls))
+    source = "sitemap"
+    if not urls:
+        source = "links"
+        r = http_get(start_url, CHROME_UA)
+        base = r["final_url"] or start_url
+        found = [urllib.parse.urljoin(base, h.strip()) for h in HREF_RE.findall(r["html"] or "")]
+        urls = list(dict.fromkeys([start_url] + [u.split("#")[0] for u in found if _bare_host(u) == host and _page_like(u)]))
+    elif not given_sitemap and not any(urllib.parse.urlsplit(u).path in ("", "/") for u in urls):
+        urls.insert(0, origin + "/")
+    return urls[:limit], {"source": source, "sitemaps": used[:10], "found": len(urls)}
+
+
+def _norm_num(v):
+    return re.sub(r"[,\s]", "", str(v or ""))
+
+
+def scan_page(url, bot, rp):
+    r = analyze(url, bot, rp)
+    s = r.get("structured") or {}
+    status = r["status"] or 0
+    ok_fetch = not r["error"] and not r["challenge"] and 0 < status < 400
+    counters_bad = sum(1 for c in r["counters"] if c["to"] is not None and _norm_num(c["shown"]) != _norm_num(c["to"]))
+    robots_meta = (r["meta"].get("robots", "") + " " + (r["x_robots_tag"] or "")).lower()
+    issues = []
+
+    def iss(level, code, msg):
+        issues.append({"level": level, "code": code, "msg": msg})
+
+    if r["error"]:
+        iss("error", "fetch", f"Could not fetch: {r['error']}")
+    elif r["challenge"]:
+        iss("error", "blocked", f"Got a bot challenge page instead of the content (HTTP {status})")
+    elif status >= 400:
+        iss("error", "http", f"HTTP {status}")
+    if r["robots_allowed"] is False:
+        iss("error", "robots", f"robots.txt blocks {bot[1]}")
+    if ok_fetch:
+        if counters_bad:
+            iss("error", "counters", f"{counters_bad} of {len(r['counters'])} animated counters show their starting value")
+        if "noindex" in robots_meta:
+            iss("warning", "noindex", "Marked noindex")
+        if r["words"] < 100:
+            iss("warning", "thin", f"Only {r['words']} words readable without JavaScript")
+        if not r["title"]:
+            iss("warning", "title", "No title")
+        if not r["meta"].get("description"):
+            iss("warning", "description", "No meta description")
+        if not s.get("items"):
+            iss("warning", "schema", "No structured data")
+        elif (s.get("counts") or {}).get("error"):
+            n = s["counts"]["error"]
+            iss("warning", "schema_errors", f"{n} structured data error{'s' if n != 1 else ''}")
+        final = (r["final_url"] or url).rstrip("/")
+        if final != url.rstrip("/"):
+            iss("info", "redirect", f"Redirects to {r['final_url']}")
+    level = ("error" if any(i["level"] == "error" for i in issues)
+             else "warning" if any(i["level"] == "warning" for i in issues) else "ok")
+    return {"url": url, "final_url": r["final_url"], "status": r["status"], "ms": r["ms"], "words": r["words"],
+            "title": (r["title"] or "")[:200], "counters": len(r["counters"]), "counters_bad": counters_bad,
+            "schema_items": len(s.get("items") or []), "schema_errors": (s.get("counts") or {}).get("error", 0),
+            "issues": issues, "level": level}
+
+
+def _scan_public(job):
+    return {k: v for k, v in job.items() if k != "stop"}
+
+
+def _scan_dir():
+    return os.path.join(DATA_DIR, "scans")
+
+
+def save_scan(job):
+    if not storage_writable():
+        return False
+    d = _scan_dir()
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, job["id"] + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(_scan_public(job), f)
+    os.replace(tmp, os.path.join(d, job["id"] + ".json"))
+    files = sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime, reverse=True)
+    for old in files[30:]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+    return True
+
+
+def load_scan(scan_id):
+    job = SCANS.get(scan_id)
+    if job:
+        return _scan_public(job)
+    if not SCAN_ID_RE.match(scan_id or ""):
+        return None
+    try:
+        with open(os.path.join(_scan_dir(), scan_id + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def list_scans():
+    keys = ("id", "url", "bot_label", "status", "total", "done", "started_at")
+    out = [{k: j.get(k) for k in keys} for j in list(SCANS.values()) if j["status"] == "running"]
+    try:
+        d = _scan_dir()
+        files = sorted((os.path.join(d, x) for x in os.listdir(d) if x.endswith(".json")), key=os.path.getmtime, reverse=True)[:20]
+    except Exception:
+        files = []
+    for p in files:
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            out.append({k: j.get(k) for k in keys})
+        except Exception:
+            pass
+    return {"scans": out}
+
+
+def _run_scan(job):
+    try:
+        urls, info = discover_urls(job["url"], job["limit"])
+        job.update(info)
+        job["total"] = len(urls)
+        if not urls:
+            job["status"] = "failed"
+            job["error"] = "No pages found: there is no sitemap, and the start page has no links to the same site."
+            return
+        rp, _ = load_robots(urls[0])
+        bot = BOT_BY_ID[job["bot"]]
+        job["phase"] = "checking"
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = {ex.submit(scan_page, u, bot, rp): u for u in urls}
+            for f in as_completed(futs):
+                try:
+                    job["results"].append(f.result())
+                except Exception as e:
+                    u = futs[f]
+                    job["results"].append({"url": u, "final_url": u, "status": None, "ms": None, "words": 0, "title": "",
+                                           "counters": 0, "counters_bad": 0, "schema_items": 0, "schema_errors": 0,
+                                           "issues": [{"level": "error", "code": "fetch", "msg": f"Check failed: {type(e).__name__}: {e}"}],
+                                           "level": "error"})
+                job["done"] += 1
+                if job["stop"]:
+                    for other in futs:
+                        other.cancel()
+                    break
+        job["status"] = "stopped" if job["stop"] else "finished"
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        job["phase"] = "done"
+        job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            if save_scan(job):
+                SCANS.pop(job["id"], None)
+        except Exception:
+            pass
+        done = [k for k, j in SCANS.items() if j["status"] != "running"]
+        for k in done[:-5]:
+            SCANS.pop(k, None)
+
+
+def start_scan(url, bot_id, limit):
+    url = (url or "").strip()
+    if not url:
+        return {"error": "Enter a site or sitemap URL."}, 400
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    try:
+        check_public_url(url)
+    except BlockedURL as e:
+        return {"error": str(e)}, 400
+    if bot_id not in BOT_BY_ID:
+        bot_id = "gptbot"
+    try:
+        limit = max(1, min(SCAN_MAX_PAGES, int(limit)))
+    except Exception:
+        limit = 50
+    with _SCAN_LOCK:
+        if any(j["status"] == "running" for j in SCANS.values()):
+            return {"error": "A scan is already running. Wait for it to finish, or stop it first."}, 409
+        job = {"id": secrets.token_hex(6), "url": url, "bot": bot_id, "bot_label": BOT_BY_ID[bot_id][1],
+               "limit": limit, "status": "running", "phase": "discovering", "total": 0, "done": 0, "found": 0,
+               "source": "", "sitemaps": [], "started_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": "",
+               "error": "", "results": [], "stop": False}
+        SCANS[job["id"]] = job
+    threading.Thread(target=_run_scan, args=(job,), daemon=True).start()
+    return {"id": job["id"]}, 200
+
+
 # ---------------------------------------------------------------- settings
 def load_settings():
     try:
@@ -992,6 +1254,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(list_models())
         elif path == "/api/settings":
             self._json(settings_public())
+        elif path == "/api/scan/status":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            job = load_scan((q.get("id") or [""])[0])
+            self._json(job if job else {"error": "Scan not found. It may have been removed."}, 200 if job else 404)
+        elif path == "/api/scan/list":
+            self._json(list_scans())
         else:
             self._send(404, "Not found", "text/plain")
 
@@ -1039,6 +1307,14 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/scan/start":
+                body, code = start_scan(payload.get("url", ""), str(payload.get("bot", "gptbot")), payload.get("limit", 50))
+                return self._json(body, code)
+            if path == "/api/scan/stop":
+                job = SCANS.get(str(payload.get("id", "")))
+                if job and job["status"] == "running":
+                    job["stop"] = True
+                return self._json({"ok": True})
             if path == "/api/settings":
                 if not storage_writable():
                     return self._json({"error": f"The server cannot write to {DATA_DIR}. Add a persistent volume there."}, 500)
