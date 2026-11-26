@@ -259,6 +259,12 @@ ul.gaplist li{padding:7px 0;border-bottom:1px solid var(--line-soft);word-break:
 ul.gaplist li:last-child{border-bottom:0}
 td.diff{background:var(--warn-bg)}
 
+/* ---------------------------------------------------------------- competitor comparison */
+#cmpTable th:not(:first-child),#cmpTable td:not(:first-child){min-width:150px}
+#cmpTable td:first-child{min-width:200px;color:var(--muted)}
+#cmpTable td.best{background:var(--ok-bg)} #cmpTable td.worst{background:var(--bad-bg)}
+#cmpTable tbody tr:hover td.best{background:var(--ok-bg)} #cmpTable tbody tr:hover td.worst{background:var(--bad-bg)}
+
 /* ---------------------------------------------------------------- AI readiness */
 .rcat{margin-top:16px}
 .rcat h3{font-size:14px;margin:0 0 2px;color:var(--muted);font-weight:600}
