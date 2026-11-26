@@ -71,16 +71,36 @@
     <div class="page hidden" id="page-ai">
       <header class="pagehead">
         <h1>AI test</h1>
-        <p class="lede">Send the text one bot received to AI models through OpenRouter and see what they understand. Models answer only from that text; this is not their own crawler visiting your site.</p>
+        <p class="lede">Ask AI models through OpenRouter what they understand from your page, either from the text a bot received or by letting the model fetch the page itself.</p>
       </header>
       <div class="empty" data-empty>Check a page above first, then ask models about it.</div>
       <div class="hidden" data-full>
         <div class="panel">
-          <div class="grid2">
+          <div class="fld">What the model reads</div>
+          <div class="modes">
+            <label class="mode"><input type="radio" name="aimode" value="text" checked>
+              <span><strong>The text a bot received</strong><small>From this tool's check, so you see exactly what GPTBot, ClaudeBot and the others got.</small></span></label>
+            <label class="mode"><input type="radio" name="aimode" value="fetch">
+              <span><strong>The model fetches the page itself</strong><small>Through OpenRouter Web Fetch, like an AI assistant opening a link for a user. This fetcher is not GPTBot or ClaudeBot.</small></span></label>
+          </div>
+          <div class="grid2" style="margin-top:16px">
             <div>
-              <label class="fld" for="viewBot">Send the view of</label>
-              <select id="viewBot"></select>
-              <label class="inline-check"><input type="checkbox" id="incSchema"> Also send the structured data (JSON-LD) this bot received</label>
+              <div id="textOpts">
+                <label class="fld" for="viewBot">Send the view of</label>
+                <select id="viewBot"></select>
+                <label class="inline-check"><input type="checkbox" id="incSchema"> Also send the structured data (JSON-LD) this bot received</label>
+              </div>
+              <div id="fetchOpts" class="hidden">
+                <label class="fld" for="engine">Fetch engine</label>
+                <select id="engine">
+                  <option value="openrouter">OpenRouter: direct fetch, no JavaScript (free)</option>
+                  <option value="native">Native: the model provider's own fetch, where available</option>
+                  <option value="exa">Exa: content extraction ($1 per 1,000 pages)</option>
+                  <option value="parallel">Parallel: content extraction ($1 per 1,000 pages)</option>
+                  <option value="firecrawl">Firecrawl: scraping service ($2.50 per 1,000 pages)</option>
+                </select>
+                <div class="note" style="margin-top:6px">Models must support tool calling. Fetches are limited to the checked page's domain, at most 3 per model. Native falls back to the OpenRouter engine when a model has no built-in fetch.</div>
+              </div>
             </div>
             <div>
               <div class="fld">OpenRouter key</div>
