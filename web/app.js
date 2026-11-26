@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {bots: 'Bot view', schema: 'Structured data', ai: 'AI test', settings: 'Settings'};
+const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', ai: 'AI test', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', p === 'settings');
+  $('#checkbar').classList.toggle('hidden', p === 'settings' || p === 'scan');
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -376,6 +376,151 @@ $('#askBtn').onclick = async () => {
   $('#askBtn').disabled = false;
 };
 
+/* ---------------------------------------------------------------- site scan */
+const ISSUE_LABELS = {fetch: 'Fetch failed', blocked: 'Bot challenge page', http: 'HTTP error', robots: 'Blocked by robots.txt',
+  counters: 'Counters at starting value', noindex: 'Noindex', thin: 'Little readable text', title: 'No title',
+  description: 'No meta description', schema: 'No structured data', schema_errors: 'Structured data errors', redirect: 'Redirects'};
+const LEVEL_CHIP = {error: 'bad', warning: 'warn', info: 'na', ok: 'ok'};
+let SCAN = null, scanTimer = null, scanLevel = 'all', scanCode = '';
+
+$('#scanBtn').onclick = startScan;
+$('#scanUrl').addEventListener('keydown', e => { if (e.key === 'Enter') startScan(); });
+$('#scanBot').onchange = () => store('abvc_scan_bot', $('#scanBot').value);
+$('#stopBtn').onclick = async () => {
+  if (!SCAN) return;
+  try{ await post('/api/scan/stop', {id: SCAN.id}); }catch(e){}
+  $('#scanStatus').textContent = 'Stopping after the pages in progress…';
+};
+$('#scanHistory').onchange = () => { const id = $('#scanHistory').value; if (id) pollScan(id); };
+$('#scanFilter').oninput = renderScanTable;
+$$('#scanLevels button').forEach(b => b.onclick = () => {
+  scanLevel = b.dataset.level;
+  $$('#scanLevels button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  renderScanTable();
+});
+$('#scanCsv').onclick = downloadCsv;
+
+async function startScan(){
+  const url = $('#scanUrl').value.trim();
+  if (!url){ $('#scanStatus').textContent = 'Enter a site or sitemap URL.'; return; }
+  store('abvc_scan_url', url);
+  $('#scanBtn').disabled = true;
+  $('#scanStatus').textContent = 'Starting…';
+  try{
+    const d = await post('/api/scan/start', {url, bot: $('#scanBot').value, limit: Number($('#scanLimit').value)});
+    if (d.error){ $('#scanStatus').textContent = d.error; $('#scanBtn').disabled = false; return; }
+    scanLevel = 'all'; scanCode = ''; $('#scanFilter').value = '';
+    $$('#scanLevels button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.level === 'all')));
+    pollScan(d.id);
+  }catch(e){ $('#scanStatus').textContent = 'Could not start the scan: ' + e.message; $('#scanBtn').disabled = false; }
+}
+
+async function pollScan(id){
+  clearTimeout(scanTimer);
+  try{
+    const d = await api('/api/scan/status?id=' + encodeURIComponent(id));
+    if (d.error){ $('#scanStatus').textContent = d.error; $('#scanBtn').disabled = false; return; }
+    SCAN = d; store('abvc_scan', id);
+    renderScan();
+    if (d.status === 'running') scanTimer = setTimeout(() => pollScan(id), 1500);
+    else loadScanHistory();
+  }catch(e){
+    $('#scanStatus').textContent = 'Lost contact with the scan, retrying… (' + e.message + ')';
+    scanTimer = setTimeout(() => pollScan(id), 4000);
+  }
+}
+
+function renderScan(){
+  const d = SCAN;
+  const running = d.status === 'running';
+  $('#scanBtn').disabled = running;
+  $('#stopBtn').classList.toggle('hidden', !running);
+  $('#scanProgress').classList.toggle('hidden', !running);
+  $('#scanBar').style.width = d.total ? `${Math.round(d.done / d.total * 100)}%` : '6%';
+  const src = d.source === 'links' ? 'links on the start page (no sitemap found)' : 'the sitemap';
+  const limited = d.found > d.total ? ` The sitemap lists ${d.found} pages; this scan covers the first ${d.total}.` : '';
+  let msg;
+  if (d.status === 'failed') msg = `Scan failed: ${d.error}`;
+  else if (running && d.phase === 'discovering') msg = `Reading the sitemap for ${d.url}…`;
+  else if (running) msg = `Checking as ${d.bot_label}: ${d.done} of ${d.total} pages from ${src}.${limited}`;
+  else msg = `${d.status === 'stopped' ? 'Stopped' : 'Finished'}: ${d.done} of ${d.total} pages from ${src}, checked as ${d.bot_label} on ${d.started_at}.${limited}`;
+  $('#scanStatus').textContent = msg;
+  if (!$('#scanUrl').value) $('#scanUrl').value = d.url;
+  $('#scanResults').classList.toggle('hidden', !d.results.length);
+  if (!d.results.length) return;
+
+  const by = {error: 0, warning: 0, ok: 0};
+  d.results.forEach(r => { by[r.level] = (by[r.level] || 0) + 1; });
+  $('#scanSummary').innerHTML = `<span class="chip ${by.error ? 'bad' : 'ok'}">${plural(by.error, 'page')} with errors</span>
+    <span class="chip ${by.warning ? 'warn' : 'ok'}">${plural(by.warning, 'page')} with warnings</span>
+    <span class="chip ok">${plural(by.ok, 'page')} OK</span>`;
+  const codes = {};
+  d.results.forEach(r => r.issues.forEach(i => { codes[i.code] = codes[i.code] || {n: 0, level: i.level}; codes[i.code].n++; }));
+  const order = {error: 0, warning: 1, info: 2};
+  const entries = Object.entries(codes).sort((a, b) => order[a[1].level] - order[b[1].level] || b[1].n - a[1].n);
+  $('#scanIssueTotals').innerHTML = entries.length
+    ? entries.map(([code, v]) => `<button class="chip ${LEVEL_CHIP[v.level]}${scanCode === code ? ' active' : ''}" data-code="${esc(code)}">${esc(ISSUE_LABELS[code] || code)}: ${v.n}</button>`).join('')
+    : '<span class="note" style="margin:0">No issues found.</span>';
+  $$('#scanIssueTotals [data-code]').forEach(b => b.onclick = () => { scanCode = scanCode === b.dataset.code ? '' : b.dataset.code; renderScan(); });
+  renderScanTable();
+}
+
+function scanRows(){
+  const q = $('#scanFilter').value.trim().toLowerCase();
+  const rank = {error: 0, warning: 1, ok: 2};
+  return (SCAN ? SCAN.results : []).filter(r =>
+      (scanLevel === 'all' || r.level === scanLevel) &&
+      (!scanCode || r.issues.some(i => i.code === scanCode)) &&
+      (!q || r.url.toLowerCase().includes(q) || (r.title || '').toLowerCase().includes(q)))
+    .sort((a, b) => rank[a.level] - rank[b.level] || a.url.localeCompare(b.url));
+}
+function pathOf(u){ try{ const x = new URL(u); return (x.pathname + x.search) || '/'; }catch(e){ return u; } }
+
+function renderScanTable(){
+  if (!SCAN) return;
+  const rows = scanRows();
+  $('#scanCount').textContent = `Showing ${rows.length} of ${plural(SCAN.results.length, 'page')}${scanCode ? `, only "${ISSUE_LABELS[scanCode] || scanCode}"` : ''}.`;
+  if (!rows.length){ $('#scanTable').innerHTML = '<tbody><tr><td class="note">No pages match these filters.</td></tr></tbody>'; return; }
+  $('#scanTable').innerHTML = `<thead><tr><th>Page</th><th>HTTP</th><th>Words</th><th>Counters</th><th>Schema</th><th>Issues</th><th></th></tr></thead><tbody>${
+    rows.map(r => `<tr>
+      <td class="pagecell"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(pathOf(r.url))}</a><span>${esc(r.title)}</span></td>
+      <td>${r.status ? `<span class="chip ${r.status < 300 ? 'ok' : r.status < 400 ? 'warn' : 'bad'}">${r.status}</span>` : '<span class="chip bad">–</span>'}</td>
+      <td class="num">${(r.words || 0).toLocaleString()}</td>
+      <td>${!r.counters ? '–' : r.counters_bad ? `<span class="chip bad">${r.counters_bad} of ${r.counters} at start</span>` : `<span class="chip ok">${r.counters} OK</span>`}</td>
+      <td>${r.schema_items ? `<span class="chip ${r.schema_errors ? 'warn' : 'ok'}">${plural(r.schema_items, 'item')}</span>` : (r.status && r.status < 400 ? '<span class="chip bad">none</span>' : '–')}</td>
+      <td>${r.issues.length ? r.issues.map(i => `<span class="issue"><span class="dot ${LEVEL_CHIP[i.level]}"></span><span>${esc(i.msg)}</span></span>`).join('') : '<span class="chip ok">OK</span>'}</td>
+      <td><a class="links" data-inspect="${esc(r.url)}">Inspect</a></td>
+    </tr>`).join('')}</tbody>`;
+  $$('[data-inspect]').forEach(a => a.onclick = () => { $('#url').value = a.dataset.inspect; location.hash = '#/bots'; runCheck(); });
+}
+
+function downloadCsv(){
+  if (!SCAN) return;
+  const cols = ['url', 'final_url', 'status', 'words', 'counters', 'counters_at_start', 'schema_items', 'schema_errors', 'level', 'issues'];
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [cols.join(',')].concat(scanRows().map(r => [r.url, r.final_url, r.status, r.words, r.counters, r.counters_bad,
+    r.schema_items, r.schema_errors, r.level, r.issues.map(i => i.msg).join('; ')].map(q).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type: 'text/csv;charset=utf-8'});
+  let host = 'site'; try{ host = new URL(SCAN.url).hostname; }catch(e){}
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `scan-${host}-${(SCAN.started_at || '').slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function loadScanHistory(){
+  try{
+    const d = await api('/api/scan/list');
+    const cur = SCAN ? SCAN.id : '';
+    const items = d.scans || [];
+    $('#scanHistory').innerHTML = (items.length ? '<option value="">Choose a scan…</option>' : '<option value="">None yet</option>') + items.map(s => {
+      let host = s.url; try{ host = new URL(s.url).hostname; }catch(e){}
+      return `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(host)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total} pages${s.status === 'running' ? ' (running)' : ''}</option>`;
+    }).join('');
+  }catch(e){}
+}
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -394,6 +539,12 @@ async function init(){
      <span>${esc(b.label)}<small>${esc(b.note)}</small></span></label>`).join('');
   $$('.bot-cb').forEach(c => c.onchange = updateBotSummary);
   updateBotSummary();
+  $('#scanBot').innerHTML = bots.map(b => `<option value="${b.id}">${esc(b.label)}</option>`).join('');
+  $('#scanBot').value = load('abvc_scan_bot') || 'gptbot';
+  $('#scanUrl').value = load('abvc_scan_url') || '';
+  loadScanHistory();
+  const sid = load('abvc_scan');
+  if (sid) pollScan(sid);
   $('#signout').classList.toggle('hidden', !s.auth);
   applySettings(s);
 }
