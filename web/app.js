@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', compare: 'Competitors', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap', 'compare'].includes(p));
   const head = $('#page-' + p + ' .pagehead');
   if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
@@ -875,6 +875,7 @@ function citeCsv(){
 }
 
 async function loadCiteHistory(){
+  loadCmpHistory();
   try{
     const d = await api('/api/cite/list');
     const cur = CITE ? CITE.id : '';
@@ -946,6 +947,7 @@ function resetResults(){
   LOGS = null; $('#logResults').classList.add('hidden'); $('#logStatus').textContent = ''; $('#logFile').value = '';
   READY = null; $('#readyResults').classList.add('hidden'); $('#readyStatus').textContent = '';
   JSGAP = null; $('#jsgapResults').classList.add('hidden'); $('#jsgapStatus').textContent = '';
+  CMP = null; $('#cmpResults').classList.add('hidden'); $('#cmpStatus').textContent = '';
 }
 function validateResults(){
   if (!activeProject()) return;
@@ -988,6 +990,8 @@ function applyProject(p, openLatest){
   $('#citeComp').value = (p.competitors || []).join(', ');
   $('#citeLocation').value = p.location || '';
   $('#citePrompts').value = (p.questions || []).join('\n');
+  $('#cmpSite').value = site; store('abvc_cmp_site', site);
+  $('#cmpComps').value = cmpCompsFromProject(p).join('\n'); store('abvc_cmp_comps', $('#cmpComps').value);
   const form = {}; CITE_FIELDS.forEach(f => form[f] = $('#' + f).value); store('abvc_cite_form', JSON.stringify(form));
   citeEstimate();
   if (openLatest) openLatestFor(p.id);
@@ -1493,6 +1497,97 @@ function renderJsgap(){
   $('#jsgapRemoved').innerHTML = d.removed_text.map(t => `<li>${esc(t)}</li>`).join('');
 }
 
+/* ---------------------------------------------------------------- competitor comparison */
+let CMP = null;
+const CMP_LABELS = [
+  ['access', 'AI crawlers allowed (of GPTBot, ClaudeBot, PerplexityBot, OAI-SearchBot, Googlebot)'],
+  ['score', 'AI readiness score'], ['words', 'Words readable without JavaScript'], ['opening', 'Opening paragraph'],
+  ['schema', 'Structured data'], ['schemaErr', 'Structured data errors'], ['counters', 'Animated counters'],
+  ['dated', 'Shows a publish or update date'], ['llms', 'llms.txt'], ['sitemap', 'Sitemap listed in robots.txt'],
+  ['speed', 'Response time to GPTBot']];
+$('#cmpBtn').onclick = runCompare;
+$('#cmpHistory').onchange = async () => {
+  const id = $('#cmpHistory').value; if (!id) return;
+  try{ const d = await api('/api/compare/get?id=' + encodeURIComponent(id)); if (!d.error){ CMP = d; renderCompare(); $('#cmpStatus').textContent = `Showing the comparison from ${d.checked_at}.`; } }catch(e){}
+};
+function cmpCompsFromProject(p){ return parseComps(p.competitors || []).filter(c => c.domain).map(c => 'https://' + c.domain + '/'); }
+
+async function runCompare(){
+  const site = $('#cmpSite').value.trim();
+  const comps = $('#cmpComps').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!site){ $('#cmpStatus').textContent = 'Enter your page.'; return; }
+  if (!comps.length){ $('#cmpStatus').textContent = 'Add at least one competitor page.'; return; }
+  if (comps.length > 5){ $('#cmpStatus').textContent = 'Use up to 5 competitors.'; return; }
+  store('abvc_cmp_site', site); store('abvc_cmp_comps', comps.join('\n'));
+  $('#cmpBtn').disabled = true;
+  $('#cmpStatus').textContent = `Checking ${plural(comps.length + 1, 'site')}… this can take up to a minute.`;
+  try{
+    const d = await post('/api/compare', {site, competitors: comps});
+    if (d.error){ $('#cmpStatus').textContent = d.error; return; }
+    CMP = d; renderCompare(); loadCmpHistory();
+    $('#cmpStatus').textContent = `Compared ${plural(d.sites.length, 'site')} at ${d.checked_at}.`;
+  }catch(e){ $('#cmpStatus').textContent = 'Comparison failed: ' + e.message; }
+  finally{ $('#cmpBtn').disabled = false; }
+}
+
+function cmpMetrics(s){
+  if (s.error) return null;
+  const blocked = [...new Set([...(s.robots_blocked || []), ...(s.server_blocked || [])])];
+  const sc = s.schema || {items: 0, types: [], errors: 0}, ct = s.counters || {total: 0, bad: 0};
+  return {
+    access: {text: blocked.length ? `${5 - blocked.length} of 5 (blocked: ${blocked.join(', ')})` : '5 of 5', v: 5 - blocked.length},
+    score: {text: `${s.score}/100`, v: s.score},
+    words: {text: (s.words || 0).toLocaleString(), v: s.words || 0},
+    opening: {text: s.opening === 'pass' ? 'Direct answer' : s.opening === 'warn' ? 'Needs work' : 'Missing', v: s.opening === 'pass' ? 2 : s.opening === 'warn' ? 1 : 0},
+    schema: {text: sc.items ? `${plural(sc.items, 'item')}: ${sc.types.join(', ')}` : 'None', v: sc.items ? 1 : 0},
+    schemaErr: {text: sc.items ? String(sc.errors) : '–', v: sc.items ? -sc.errors : null},
+    counters: {text: ct.total ? (ct.bad ? `${ct.bad} of ${ct.total} stuck at start` : `${ct.total} show final values`) : 'None', v: ct.total ? -ct.bad : null},
+    dated: {text: s.dated ? 'Yes' : 'No', v: s.dated ? 1 : 0},
+    llms: {text: s.llms ? 'Yes' : 'No', v: s.llms ? 1 : 0},
+    sitemap: {text: s.sitemap ? 'Yes' : 'No', v: s.sitemap ? 1 : 0},
+    speed: {text: s.ms == null ? '–' : s.ms < 1000 ? s.ms + ' ms' : (s.ms / 1000).toFixed(1) + ' s', v: s.ms != null ? -Math.round(s.ms / 100) : null},
+  };
+}
+
+function renderCompare(){
+  const d = CMP;
+  $('#cmpResults').classList.remove('hidden');
+  const ms = d.sites.map(cmpMetrics);
+  const head = `<thead><tr><th>Check</th>${d.sites.map(s => `<th>${s.you ? '<span class="chip ok">You</span> ' : ''}<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.host)}</a></th>`).join('')}</tr></thead>`;
+  const errRow = d.sites.some(s => s.error)
+    ? `<tr><td>Could not check</td>${d.sites.map(s => `<td>${s.error ? `<span class="chip bad" style="white-space:normal">${esc(s.error)}</span>` : ''}</td>`).join('')}</tr>` : '';
+  const rows = CMP_LABELS.map(([key, label]) => {
+    const vals = ms.map(m => m && m[key] && m[key].v !== null ? m[key].v : null).filter(v => v !== null);
+    const best = Math.max(...vals), worst = Math.min(...vals);
+    return `<tr><td>${esc(label)}</td>${ms.map(m => {
+      if (!m) return '<td>–</td>';
+      const c = m[key], cls = c.v === null || best === worst ? '' : c.v === best ? 'best' : c.v === worst ? 'worst' : '';
+      return `<td class="${cls}">${esc(c.text)}</td>`;
+    }).join('')}</tr>`;
+  }).join('');
+  $('#cmpTable').innerHTML = head + '<tbody>' + errRow + rows + '</tbody>';
+  const mine = ms[0], ahead = [];
+  if (mine){
+    CMP_LABELS.forEach(([key, label]) => {
+      if (mine[key].v === null) return;
+      const better = d.sites.map((s, i) => [s, ms[i]]).slice(1).filter(([s, m]) => m && m[key].v !== null && m[key].v > mine[key].v);
+      if (better.length) ahead.push(`<li><span class="chip warn">Behind</span><span><strong>${esc(label)}</strong><span class="where">You: ${esc(mine[key].text)}. ${better.map(([s, m]) => `${esc(s.host)}: ${esc(m[key].text)}`).join('; ')}.</span></span></li>`);
+    });
+  }
+  $('#cmpAhead').innerHTML = !mine ? '<li><span class="chip bad">Error</span><span>Your page could not be checked, see the table below.</span></li>'
+    : ahead.length ? ahead.join('') : '<li><span class="chip ok">Ahead</span><span>You match or beat every competitor on these checks.</span></li>';
+}
+
+async function loadCmpHistory(){
+  try{
+    const d = await api('/api/compare/list');
+    const items = (d.runs || []).filter(s => belongsToProject(s.site));
+    const cur = CMP ? CMP.id : '';
+    $('#cmpHistory').innerHTML = (items.length ? '<option value="">Choose a comparison…</option>' : '<option value="">None yet</option>') + items.map(s =>
+      `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.host)}, ${esc((s.checked_at || '').slice(0, 16))}, ${plural(s.count, 'site')}</option>`).join('');
+  }catch(e){}
+}
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -1520,6 +1615,8 @@ async function init(){
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
   $('#readyUrl').value = load('abvc_ready_url') || lastUrl;
   $('#jsgapUrl').value = load('abvc_jsgap_url') || lastUrl;
+  $('#cmpSite').value = load('abvc_cmp_site') || lastUrl;
+  $('#cmpComps').value = load('abvc_cmp_comps') || '';
   try{
     const form = JSON.parse(load('abvc_cite_form') || '{}');
     CITE_FIELDS.forEach(f => { if (form[f] !== undefined) $('#' + f).value = form[f]; });
