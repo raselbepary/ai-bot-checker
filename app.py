@@ -825,25 +825,47 @@ def openrouter_key(given):
             or os.environ.get("OPENROUTER_API_KEY", "").strip())
 
 
-def ask_model(key, model, bot_label, url, text, question):
+FETCH_ENGINES = ("openrouter", "native", "auto", "exa", "parallel", "firecrawl")
+OPENROUTER_URL = os.environ.get("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
+
+
+def ask_model(key, model, bot_label, url, text, question, mode="text", engine="openrouter"):
     key = openrouter_key(key)
     if not key:
-        return {"model": model, "error": "No OpenRouter API key. Save one in the page or set OPENROUTER_API_KEY."}
-    truncated = len(text) > MAX_TEXT_FOR_AI
-    content = text[:MAX_TEXT_FOR_AI]
-    system = (
-        f"You are an AI assistant. Below is the content of one web page exactly as the crawler "
-        f"'{bot_label}' received it: the raw HTML converted to text, with no JavaScript executed. "
-        "Answer the user's question using ONLY this content. Do not use outside knowledge about the "
-        "site or company. If information is missing, unclear, or looks like a placeholder (such as 0), "
-        "say so explicitly. Quote numbers exactly as they appear in the content."
-    )
-    user = (f"URL: {url}\n\nPAGE CONTENT{' (truncated)' if truncated else ''}:\n<<<\n{content}\n>>>\n\n"
-            f"QUESTION: {question}")
-    body = json.dumps({"model": model, "temperature": 0.2,
-                       "messages": [{"role": "system", "content": system},
-                                    {"role": "user", "content": user}]}).encode()
-    req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=body, headers={
+        return {"model": model, "error": "No OpenRouter API key. Save one in Settings or set OPENROUTER_API_KEY."}
+    truncated = False
+    tools = None
+    if mode == "fetch":
+        engine = engine if engine in FETCH_ENGINES else "openrouter"
+        host = urllib.parse.urlsplit(url).hostname or ""
+        domains = sorted({host, host[4:] if host.startswith("www.") else host} - {""})
+        system = (
+            "You are an AI assistant with a web fetch tool. Fetch the exact URL the user gives you and answer "
+            "the question using ONLY the content you fetched. Do not use outside knowledge about the site or company. "
+            "Start your answer with one line: 'Fetch: succeeded' or 'Fetch: failed - <reason>'. "
+            "If information is missing, unclear, or looks like a placeholder (such as 0), say so explicitly. "
+            "Quote numbers exactly as they appear in the content."
+        )
+        user = f"URL: {url}\n\nFetch this page, then answer.\n\nQUESTION: {question}"
+        tools = [{"type": "openrouter:web_fetch", "parameters": {
+            "engine": engine, "max_uses": 3, "max_content_tokens": 30000, "allowed_domains": domains}}]
+    else:
+        truncated = len(text) > MAX_TEXT_FOR_AI
+        content = text[:MAX_TEXT_FOR_AI]
+        system = (
+            f"You are an AI assistant. Below is the content of one web page exactly as the crawler "
+            f"'{bot_label}' received it: the raw HTML converted to text, with no JavaScript executed. "
+            "Answer the user's question using ONLY this content. Do not use outside knowledge about the "
+            "site or company. If information is missing, unclear, or looks like a placeholder (such as 0), "
+            "say so explicitly. Quote numbers exactly as they appear in the content."
+        )
+        user = (f"URL: {url}\n\nPAGE CONTENT{' (truncated)' if truncated else ''}:\n<<<\n{content}\n>>>\n\n"
+                f"QUESTION: {question}")
+    payload = {"model": model, "temperature": 0.2,
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if tools:
+        payload["tools"] = tools
+    req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(payload).encode(), headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost",
@@ -865,6 +887,10 @@ def ask_model(key, model, bot_label, url, text, question):
             msg = json.loads(msg).get("error", {}).get("message", msg)
         except Exception:
             pass
+        if mode == "fetch" and e.code == 403:
+            msg += " Check that Web Fetch, and this engine, are allowed on OpenRouter's Tools page."
+        elif mode == "fetch" and e.code in (400, 404):
+            msg += " This model may not support tool calling; try another model."
         return {"model": model, "error": f"HTTP {e.code}: {msg}", "ms": int((time.time() - t0) * 1000)}
     except Exception as e:
         return {"model": model, "error": f"{type(e).__name__}: {e}", "ms": int((time.time() - t0) * 1000)}
@@ -876,7 +902,8 @@ def ask_model(key, model, bot_label, url, text, question):
     except Exception:
         answer = json.dumps(data)[:2000]
     return {"model": model, "answer": answer, "ms": int((time.time() - t0) * 1000),
-            "usage": data.get("usage", {}), "truncated": truncated}
+            "usage": data.get("usage", {}), "truncated": truncated,
+            "mode": mode, "engine": engine if mode == "fetch" else None}
 
 
 def list_models():
@@ -1009,7 +1036,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/ask":
                 return self._json(ask_model(payload.get("key"), payload.get("model", ""),
                                             payload.get("bot", ""), payload.get("url", ""),
-                                            payload.get("text", ""), payload.get("question", "")))
+                                            payload.get("text", ""), payload.get("question", ""),
+                                            "fetch" if payload.get("mode") == "fetch" else "text",
+                                            str(payload.get("engine", "openrouter"))))
             if path == "/api/settings":
                 if not storage_writable():
                     return self._json({"error": f"The server cannot write to {DATA_DIR}. Add a persistent volume there."}, 500)
