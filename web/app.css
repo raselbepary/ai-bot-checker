@@ -115,6 +115,11 @@ ul.issues li:last-child{border-bottom:0}
 ul.issues .where{display:block;color:var(--muted);font-size:12.5px}
 
 /* AI answers */
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mode{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px;cursor:pointer;background:var(--paper)}
+.mode small{display:block;color:var(--muted);font-size:13px;margin-top:2px}
+.mode:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+@media (max-width:760px){.modes{grid-template-columns:1fr}}
 .answers{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
 .answer{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--surface)}
 .answer h3{font-size:14.5px;margin:0 0 2px;word-break:break-all}
