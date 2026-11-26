@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs'].includes(p));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -1002,6 +1002,126 @@ $('#projDelete').onclick = async () => {
   await loadProjects();
   $('#projStatus').textContent = 'Project deleted.';
 };
+
+/* ---------------------------------------------------------------- crawler visits */
+let LOGS = null;
+$('#logBtn').onclick = uploadLog;
+$('#logFilter').oninput = renderLogPages;
+$('#logCsv').onclick = logCsv;
+
+function fmtBytes(n){ return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+function uploadLog(){
+  const f = $('#logFile').files[0];
+  if (!f){ $('#logStatus').textContent = 'Choose a log file first.'; return; }
+  if (f.size > 150 * 1024 * 1024){ $('#logStatus').textContent = 'The file is larger than 150 MB. Compress it with gzip or export a shorter period.'; return; }
+  $('#logBtn').disabled = true;
+  $('#logProgress').classList.remove('hidden'); $('#logBar').style.width = '0%';
+  $('#logStatus').textContent = `Uploading ${f.name} (${fmtBytes(f.size)})…`;
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/logs/analyze');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.setRequestHeader('X-File-Name', encodeURIComponent(f.name));
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    $('#logBar').style.width = pct + '%';
+    $('#logStatus').textContent = pct < 100 ? `Uploading ${f.name}: ${pct}%…` : 'Analyzing the log and checking crawler addresses…';
+  };
+  const done = () => { $('#logBtn').disabled = false; $('#logProgress').classList.add('hidden'); };
+  xhr.onerror = () => { done(); $('#logStatus').textContent = 'Upload failed. Check your connection and try again.'; };
+  xhr.onload = () => {
+    done();
+    if (xhr.status === 401){ location.href = '/login'; return; }
+    let d; try{ d = JSON.parse(xhr.responseText); }catch(e){ $('#logStatus').textContent = `The server returned an unexpected response (HTTP ${xhr.status}).`; return; }
+    if (d.error && !d.stats){ $('#logStatus').textContent = d.error; return; }
+    LOGS = d; renderLogs();
+    $('#logStatus').textContent = d.error || `Analyzed ${d.file.name} (${fmtBytes(d.file.bytes)}${d.file.gzip ? ', gzip' : ''}) at ${d.analyzed_at}.`;
+  };
+  xhr.send(f);
+}
+
+function verifyChip(b){
+  if (!b.verifiable && !b.verified && !b.fake) return `<span class="chip na" title="${esc(b.list_error || 'This company does not publish an IP address list')}">Can't verify</span>`;
+  if (b.fake && !b.verified) return '<span class="chip bad">All fake</span>';
+  if (b.fake) return `<span class="chip warn">${b.verified.toLocaleString()} real, ${b.fake.toLocaleString()} fake</span>`;
+  return '<span class="chip ok">Verified</span>';
+}
+function renderLogs(){
+  const d = LOGS, s = d.stats;
+  $('#logResults').classList.toggle('hidden', !s.parsed);
+  if (!s.parsed) return;
+  const range = s.first ? (s.first === s.last ? s.first : `${s.first} to ${s.last}`) : 'unknown dates';
+  $('#logSummary').innerHTML = `
+    <span class="chip na">${s.lines.toLocaleString()} lines, ${range}</span>
+    <span class="chip ${s.ai_visits ? 'ok' : 'warn'}">${s.ai_visits.toLocaleString()} AI crawler requests</span>
+    <span class="chip ${s.verified ? 'ok' : 'na'}">${s.verified.toLocaleString()} verified by IP</span>
+    ${s.fake ? `<span class="chip bad">${s.fake.toLocaleString()} fake</span>` : ''}
+    ${s.unknown ? `<span class="chip na">${s.unknown.toLocaleString()} can't be verified</span>` : ''}
+    ${s.proxy ? `<span class="chip warn">${s.proxy.toLocaleString()} through Cloudflare</span>` : ''}`;
+  const warns = [];
+  if (s.truncated) warns.push(['warning', 'Only the first 3 million lines were analyzed.']);
+  if (s.unparsed) warns.push([s.unparsed > s.parsed ? 'error' : 'suggestion', `${s.unparsed.toLocaleString()} lines could not be read${d.unparsed_sample.length ? '. Example: ' + d.unparsed_sample[0] : ''}`]);
+  if (s.no_ua > s.parsed / 2) warns.push(['warning', 'Most lines have no user agent, so crawlers cannot be recognized. Use the “combined” log format, which includes it.']);
+  if (s.proxy) warns.push(['warning', 'Some crawler requests show Cloudflare addresses instead of the real visitor address, so they cannot be verified. Turn on real visitor IPs on the server (for example Apache mod_remoteip or Nginx real_ip with Cloudflare\'s ranges), or analyze Cloudflare\'s own logs.']);
+  const LIST_NAMES = {'openai-gptbot': 'GPTBot', 'openai-searchbot': 'OAI-SearchBot', 'openai-chatgpt-user': 'ChatGPT-User', 'openai-adsbot': 'OAI-AdsBot',
+    perplexitybot: 'PerplexityBot', 'perplexity-user': 'Perplexity-User', googlebot: 'Googlebot', bingbot: 'Bingbot', applebot: 'Applebot', 'mistralai-user': 'MistralAI-User'};
+  const failed = Object.keys(d.list_errors || {}).filter(k => k !== 'cloudflare').map(k => LIST_NAMES[k] || k);
+  if (failed.length) warns.push(['suggestion', `The published IP lists for ${failed.join(', ')} could not be loaded right now, so those crawlers show as “can't verify”. Try again later.`]);
+  if (!s.ai_visits) warns.push(['warning', 'No AI crawler requests were found in this log. Check the period covered, and the AI access page in case crawlers are blocked.']);
+  $('#logWarnings').innerHTML = warns.map(([l, m]) => `<li><span class="chip ${LEVEL[l][0]}">${LEVEL[l][1]}</span><span>${esc(m)}</span></li>`).join('');
+
+  $('#logBots').innerHTML = d.bots.length ? `<thead><tr><th>Crawler</th><th>Requests</th><th>Identity</th><th>Pages</th><th>robots.txt</th><th>Errors</th><th>Last seen</th></tr></thead><tbody>${
+    d.bots.map(b => `<tr>
+      <td><strong>${esc(b.label)}</strong><span class="sub">${esc(b.company)}</span></td>
+      <td class="num">${b.hits.toLocaleString()}</td>
+      <td>${verifyChip(b)}${b.proxy ? ` <span class="chip warn">${b.proxy} via Cloudflare</span>` : ''}</td>
+      <td class="num">${b.pages.toLocaleString()}</td>
+      <td class="num">${b.robots ? b.robots.toLocaleString() : '–'}</td>
+      <td>${b.errors ? `<span class="chip bad">${b.errors.toLocaleString()}</span>` : '<span class="chip ok">0</span>'}</td>
+      <td class="num">${esc(b.last || '–')}</td></tr>`).join('')}</tbody>` : '<tbody><tr><td class="note">No AI crawlers found.</td></tr></tbody>';
+  $('#logNotSeen').textContent = d.not_seen.length ? `Not seen in this log: ${d.not_seen.map(x => x.label).join(', ')}.` : '';
+
+  const days = d.days.filter(x => x.date !== 'unknown');
+  const max = Math.max(1, ...days.map(x => x.real + x.fake));
+  $('#logDays').innerHTML = days.length ? days.map(x => `<div class="day" title="${esc(x.date)}: ${x.real} real or unverifiable, ${x.fake} fake">
+      <span class="real" style="height:${x.real / max * 100}%"></span><span class="fake" style="height:${x.fake / max * 100}%"></span></div>`).join('') : '<div class="note">No dates found in the log.</div>';
+  const old = $('#logDays').nextElementSibling;
+  if (old && old.classList.contains('daylabels')) old.remove();
+  if (days.length) $('#logDays').insertAdjacentHTML('afterend', `<div class="daylabels"><span>${esc(days[0].date)}</span><span>${esc(days[days.length - 1].date)}</span></div>`);
+
+  renderLogPages();
+  $('#logErrorsPanel').classList.toggle('hidden', !d.errors.length);
+  $('#logErrors').innerHTML = `<thead><tr><th>Page</th><th>Crawler</th><th>Status</th><th>Times</th></tr></thead><tbody>${
+    d.errors.map(e => `<tr><td>${esc(e.path)}</td><td>${esc(e.bot)}</td><td><span class="chip bad">${e.status}</span></td><td class="num">${e.count.toLocaleString()}</td></tr>`).join('')}</tbody>`;
+  $('#logFakesPanel').classList.toggle('hidden', !d.fakes.length);
+  $('#logFakes').innerHTML = `<thead><tr><th>Address</th><th>Claimed to be</th><th>Requests</th></tr></thead><tbody>${
+    d.fakes.map(f => `<tr><td>${esc(f.ip)}</td><td>${esc(f.bot)}</td><td class="num">${f.count.toLocaleString()}</td></tr>`).join('')}</tbody>`;
+}
+function logRows(){
+  const q = $('#logFilter').value.trim().toLowerCase();
+  return (LOGS ? LOGS.pages : []).filter(p => !q || p.path.toLowerCase().includes(q));
+}
+function renderLogPages(){
+  if (!LOGS) return;
+  const rows = logRows();
+  $('#logPagesNote').textContent = `${LOGS.total_pages.toLocaleString()} different pages were read by AI crawlers (files like images and scripts are left out). Showing the top ${Math.min(rows.length, 150)}${$('#logFilter').value ? ' matching the filter' : ''}.`;
+  $('#logPages').innerHTML = rows.length ? `<thead><tr><th>Page</th><th>Requests</th><th>Crawlers</th><th>Errors</th></tr></thead><tbody>${
+    rows.map(p => `<tr><td style="word-break:break-all">${esc(p.path)}</td><td class="num">${p.hits.toLocaleString()}</td>
+      <td>${p.bots.slice(0, 5).map(([b, n]) => `<span class="chip na">${esc(b)} ${n}</span>`).join(' ')}</td>
+      <td>${p.errors ? `<span class="chip bad">${p.errors.toLocaleString()}</span>` : '–'}</td></tr>`).join('')}</tbody>` : '<tbody><tr><td class="note">No pages match.</td></tr></tbody>';
+}
+function logCsv(){
+  if (!LOGS) return;
+  const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['page', 'requests', 'errors', 'crawlers'].map(q).join(',')].concat(logRows().map(p =>
+    [p.path, p.hits, p.errors, p.bots.map(([b, n]) => `${b} ${n}`).join('; ')].map(q).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `crawler-visits-${(LOGS.file.name || 'log').replace(/[^\w.-]+/g, '_')}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
 /* ---------------------------------------------------------------- start */
 async function init(){
