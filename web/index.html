@@ -4,34 +4,46 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Bot View Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <div class="shell">
   <aside class="nav">
-    <a class="brand" href="#/bots">AI Bot View Checker</a>
+    <a class="brand" href="#/bots"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></span><span>AI Bot View Checker</span></a>
     <div class="projpick">
-      <label for="projectSel">Project</label>
+      <label for="projectSel">Client</label>
       <select id="projectSel"><option value="">No project</option></select>
     </div>
-    <nav aria-label="Tools">
-      <a href="#/projects" data-page="projects">Projects</a>
-      <a href="#/bots" data-page="bots">Bot view</a>
-      <a href="#/scan" data-page="scan">Site scan</a>
-      <a href="#/schema" data-page="schema">Structured data</a>
-      <a href="#/access" data-page="access">AI access</a>
-      <a href="#/logs" data-page="logs">Crawler visits</a>
-      <a href="#/llms" data-page="llms">llms.txt</a>
-      <a href="#/ai" data-page="ai">AI test</a>
-      <a href="#/cite" data-page="cite">AI citations</a>
+    <div class="navlinks">
+    <nav aria-label="Clients">
+      <a href="#/projects" data-page="projects"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>Projects</span></a>
+    </nav>
+    <nav aria-label="Site checks">
+      <span class="navlabel">Site checks</span>
+      <a href="#/bots" data-page="bots"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><span>Bot view</span></a>
+      <a href="#/scan" data-page="scan"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg><span>Site scan</span></a>
+      <a href="#/schema" data-page="schema"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span>Structured data</span></a>
+      <a href="#/access" data-page="access"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>AI access</span></a>
+      <a href="#/logs" data-page="logs"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>Crawler visits</span></a>
+      <a href="#/llms" data-page="llms"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>llms.txt</span></a>
+    </nav>
+    <nav aria-label="AI answers">
+      <span class="navlabel">AI answers</span>
+      <a href="#/ai" data-page="ai"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>AI test</span></a>
+      <a href="#/cite" data-page="cite"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span>AI citations</span></a>
     </nav>
     <nav class="nav-bottom" aria-label="Account">
-      <a href="#/settings" data-page="settings">Settings</a>
-      <a href="/logout" id="signout" class="hidden">Sign out</a>
+      <a href="#/settings" data-page="settings"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span>Settings</span></a>
+      <a href="/logout" id="signout" class="hidden"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg><span>Sign out</span></a>
     </nav>
+    </div>
   </aside>
 
   <main class="main">
+    <div class="ctx" id="ctx" aria-live="polite"></div>
     <section class="checkbar" id="checkbar">
       <div class="row url-row">
         <input id="url" type="text" placeholder="https://www.example.com/page/" autocomplete="url" aria-label="Page URL">
