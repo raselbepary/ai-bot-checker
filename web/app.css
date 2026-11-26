@@ -126,4 +126,5 @@ ul.issues .where{display:block;color:var(--muted);font-size:12.5px}
 .answer .meta{color:var(--muted);font-size:12.5px;margin-bottom:8px}
 .answer .body{white-space:pre-wrap;font-size:14px;word-break:break-word}
 .answer.err .body{color:var(--bad)}
+.answer .warnline{color:var(--warn);font-size:13px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
 @media (prefers-reduced-motion: reduce){*{transition:none !important}}
