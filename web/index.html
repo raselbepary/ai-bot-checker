@@ -17,6 +17,7 @@
       <a href="#/access" data-page="access">AI access</a>
       <a href="#/llms" data-page="llms">llms.txt</a>
       <a href="#/ai" data-page="ai">AI test</a>
+      <a href="#/cite" data-page="cite">AI citations</a>
     </nav>
     <nav class="nav-bottom" aria-label="Account">
       <a href="#/settings" data-page="settings">Settings</a>
@@ -237,6 +238,75 @@
           <div class="row" style="margin-top:16px"><button id="askBtn">Ask models</button><span class="status" id="askStatus" style="margin:0"></span></div>
         </div>
         <div class="answers" id="answers"></div>
+      </div>
+    </div>
+
+    <!-- AI citations -->
+    <div class="page hidden" id="page-cite">
+      <header class="pagehead">
+        <h1>AI citations</h1>
+        <p class="lede">Ask AI models with live web search the questions your customers ask, and see whether they mention or cite your site, and which competitors they recommend instead.</p>
+      </header>
+      <section class="panel">
+        <div class="grid2">
+          <div>
+            <label class="fld" for="citeDomain">Your site's domain</label>
+            <input id="citeDomain" type="text" placeholder="example.com">
+            <label class="fld" for="citeBrand" style="margin-top:12px">Brand names <span class="note" style="margin:0;font-weight:400">comma-separated, used to spot mentions</span></label>
+            <input id="citeBrand" type="text" placeholder="Example Company, Example Co">
+            <label class="fld" for="citeComp" style="margin-top:12px">Competitors <span class="note" style="margin:0;font-weight:400">optional; names, domains, or Name (domain.com)</span></label>
+            <input id="citeComp" type="text" placeholder="Rival HVAC (rivalhvac.com), otherbrand.com">
+          </div>
+          <div>
+            <label class="fld" for="citePrompts">Questions <span class="note" style="margin:0;font-weight:400">one per line, up to 10, written the way a customer would ask</span></label>
+            <textarea id="citePrompts" rows="7" placeholder="Best HVAC company in Dallas&#10;Who installs heat pumps near Plano, TX?&#10;Is a heat pump worth it in North Texas?"></textarea>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:14px">
+          <div>
+            <div class="fld">Models <a class="links" href="#/settings" style="font-weight:400">Edit list</a> <span class="note" style="margin:0;font-weight:400">up to 6</span></div>
+            <div class="modelpick" id="citeModels"></div>
+          </div>
+          <div>
+            <label class="fld" for="citeEngine">Search engine</label>
+            <select id="citeEngine">
+              <option value="auto">Auto: the model's own search where available, otherwise Exa (recommended)</option>
+              <option value="native">Native: the model provider's own search</option>
+              <option value="exa">Exa</option>
+              <option value="parallel">Parallel</option>
+              <option value="perplexity">Perplexity search</option>
+              <option value="firecrawl">Firecrawl (higher cost)</option>
+            </select>
+            <label class="fld" for="citeLocation" style="margin-top:12px">Searcher location <span class="note" style="margin:0;font-weight:400">optional: City, Region, Country code; native search only</span></label>
+            <input id="citeLocation" type="text" placeholder="Dallas, Texas, US">
+          </div>
+        </div>
+        <div class="row" style="margin-top:16px">
+          <button id="citeBtn">Run citation test</button>
+          <button class="ghost hidden" id="citeStop">Stop</button>
+          <label class="fld" for="citeHistory" style="margin:0 0 0 6px">Past tests</label>
+          <select id="citeHistory" style="width:auto;max-width:320px"><option value="">None yet</option></select>
+        </div>
+        <div class="note" id="citeEstimate"></div>
+        <div class="status" id="citeStatus"></div>
+        <div class="progress hidden" id="citeProgress"><div id="citeBar"></div></div>
+      </section>
+      <div id="citeResults" class="hidden">
+        <section class="panel">
+          <div class="chips" id="citeSummary"></div>
+          <div class="subhead">Share of voice</div>
+          <div class="tablewrap"><table id="citeSov"></table></div>
+        </section>
+        <section class="panel">
+          <div class="row" style="justify-content:space-between">
+            <h2 style="margin:0">Results by question and model</h2>
+            <button class="ghost" id="citeCsv">Download CSV</button>
+          </div>
+          <div class="note" style="margin:4px 0 10px">Cited #N means your site was the Nth source. Click a result to read the answer.</div>
+          <div class="tablewrap"><table id="citeMatrix"></table></div>
+        </section>
+        <h2 class="sub">Answers</h2>
+        <div id="citeAnswers"></div>
       </div>
     </div>
 
