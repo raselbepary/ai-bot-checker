@@ -232,7 +232,7 @@ class PageExtractor(HTMLParser):
             self.in_title = True
         elif tag == "meta":
             name = (a.get("name") or a.get("property") or "").lower()
-            if name in ("description", "robots", "og:title", "og:description"):
+            if name in ("description", "robots", "og:title", "og:description", "og:site_name", "og:image"):
                 self.meta[name] = a.get("content", "")
         elif tag == "link" and "canonical" in a.get("rel", "").lower():
             self.canonical = a.get("href", "")
@@ -313,6 +313,348 @@ def find_counters(html):
     return found
 
 
+# ---------------------------------------------------------------- structured data
+JSONLD_RE = re.compile(r'<script\b[^>]*type\s*=\s*["\']?application/ld\+json["\']?[^>]*>(.*?)</script\s*>', re.I | re.S)
+MICRODATA_RE = re.compile(r'itemtype\s*=\s*["\']https?://schema\.org/([A-Za-z]+)', re.I)
+
+LOCAL_BUSINESS_TYPES = {
+    "LocalBusiness", "HVACBusiness", "Plumber", "Electrician", "RoofingContractor", "GeneralContractor",
+    "HomeAndConstructionBusiness", "Locksmith", "MovingCompany", "HousePainter", "AutoRepair", "AutomotiveBusiness",
+    "Dentist", "MedicalBusiness", "MedicalClinic", "Physician", "Pharmacy", "Optician", "LegalService", "Attorney",
+    "Notary", "RealEstateAgent", "Restaurant", "FoodEstablishment", "CafeOrCoffeeShop", "Bakery", "BarOrPub",
+    "Store", "ProfessionalService", "FinancialService", "AccountingService", "InsuranceAgency", "BankOrCreditUnion",
+    "HealthAndBeautyBusiness", "BeautySalon", "HairSalon", "DaySpa", "LodgingBusiness", "Hotel",
+    "SportsActivityLocation", "ExerciseGym", "EntertainmentBusiness", "EmergencyService", "ChildCare",
+    "DryCleaningOrLaundry", "EmploymentAgency", "SelfStorage", "TravelAgency", "AnimalShelter", "VeterinaryCare",
+}
+ORG_TYPES = {
+    "Organization", "Corporation", "NGO", "EducationalOrganization", "GovernmentOrganization", "MedicalOrganization",
+    "NewsMediaOrganization", "OnlineBusiness", "OnlineStore", "SportsOrganization", "PerformingGroup", "Airline",
+    "Consortium", "ResearchOrganization", "Cooperative", "Project",
+}
+ARTICLE_TYPES = {"Article", "BlogPosting", "NewsArticle", "TechArticle", "Report", "ScholarlyArticle",
+                 "SocialMediaPosting", "AnalysisNewsArticle", "OpinionNewsArticle", "LiveBlogPosting"}
+WEBPAGE_TYPES = {"WebPage", "AboutPage", "ContactPage", "CollectionPage", "ItemPage", "ProfilePage",
+                 "SearchResultsPage", "CheckoutPage", "MedicalWebPage", "RealEstateListing", "QAPage"}
+
+SCHEMA_RULES = {
+    "Organization": {"required": ["name", "url"], "recommended": ["logo", "sameAs", "description", "contactPoint"]},
+    "LocalBusiness": {"required": ["name", "address"],
+                      "recommended": ["url", "telephone", "image", "openingHoursSpecification", "geo", "areaServed", "sameAs"]},
+    "WebSite": {"required": ["name", "url"], "recommended": ["publisher", "inLanguage"]},
+    "WebPage": {"required": ["name", "url"], "recommended": ["description", "isPartOf", "dateModified", "inLanguage"]},
+    "Article": {"required": ["headline", "author", "datePublished"],
+                "recommended": ["image", "dateModified", "publisher", "description"]},
+    "Product": {"required": ["name", "offers"], "recommended": ["image", "description", "brand", "sku", "aggregateRating"]},
+    "Service": {"required": ["name"], "recommended": ["description", "provider", "areaServed", "serviceType"]},
+    "FAQPage": {"required": ["mainEntity"], "recommended": []},
+    "BreadcrumbList": {"required": ["itemListElement"], "recommended": []},
+    "Person": {"required": ["name"], "recommended": ["url", "jobTitle", "sameAs", "image", "worksFor"]},
+    "Event": {"required": ["name", "startDate", "location"], "recommended": ["endDate", "image", "description", "offers", "organizer"]},
+    "VideoObject": {"required": ["name", "thumbnailUrl", "uploadDate"], "recommended": ["description", "contentUrl", "duration"]},
+    "HowTo": {"required": ["name", "step"], "recommended": ["image", "totalTime"]},
+}
+DATE_PROPS = ("datePublished", "dateModified", "uploadDate", "startDate", "endDate", "foundingDate")
+URL_PROPS = ("url", "logo", "image", "thumbnailUrl", "contentUrl")
+PLACEHOLDER_RE = re.compile(r"lorem ipsum|example\.com|\{\{|\}\}|\byour company\b|\breplace\b|\btbd\b|\bxxx+\b", re.I)
+
+
+def schema_family(t):
+    if t in LOCAL_BUSINESS_TYPES:
+        return "LocalBusiness"
+    if t in ORG_TYPES:
+        return "Organization"
+    if t in ARTICLE_TYPES:
+        return "Article"
+    if t in WEBPAGE_TYPES:
+        return "WebPage"
+    return t
+
+
+def _types(node):
+    t = node.get("@type")
+    items = t if isinstance(t, list) else [t]
+    out = []
+    for x in items:
+        if isinstance(x, str) and x.strip():
+            x = re.sub(r"^(https?://schema\.org/|schema:)", "", x.strip())
+            out.append(x)
+    return out
+
+
+def _has(node, prop):
+    v = node.get(prop)
+    return v not in (None, "", [], {})
+
+
+def _walk(obj, fn, depth=0):
+    if depth > 12:
+        return
+    if isinstance(obj, dict):
+        fn(obj)
+        for v in obj.values():
+            _walk(v, fn, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk(v, fn, depth + 1)
+
+
+def _strings(obj, depth=0):
+    if depth > 12:
+        return
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if not k.startswith("@"):
+                yield from _strings(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _strings(v, depth + 1)
+
+
+def _short_id(i):
+    if not isinstance(i, str):
+        return ""
+    return "#" + i.split("#", 1)[1] if "#" in i else i[-40:]
+
+
+def _format_address(d):
+    if not isinstance(d, dict):
+        return str(d)
+    country = d.get("addressCountry")
+    if isinstance(country, dict):
+        country = country.get("name", "")
+    parts = [d.get("streetAddress"), d.get("addressLocality"), d.get("addressRegion"), d.get("postalCode"), country]
+    return ", ".join(str(p) for p in parts if p)
+
+
+def analyze_structured(html, page_text, page_url, meta, headings, title):
+    issues, items, blocks = [], [], []
+
+    def add(level, msg, where="Page"):
+        issues.append({"level": level, "msg": msg, "where": where})
+
+    for i, m in enumerate(JSONLD_RE.finditer(html), 1):
+        raw = m.group(1).strip()
+        raw = re.sub(r"^\s*(<!--|//\s*<!\[CDATA\[)", "", raw)
+        raw = re.sub(r"(-->|//\s*\]\]>)\s*$", "", raw).strip()
+        if not raw:
+            add("warning", f"JSON-LD block {i} is empty.", f"Block {i}")
+            continue
+        try:
+            data = json.loads(raw, strict=False)
+        except Exception as e:
+            where = f" ({getattr(e, 'msg', 'parse error')} at line {getattr(e, 'lineno', '?')})"
+            add("error", f"JSON-LD block {i} is not valid JSON{where}, so AI tools and search engines ignore it completely.",
+                f"Block {i}")
+            blocks.append({"valid": False})
+            continue
+        blocks.append({"valid": True, "data": data})
+        for root in (data if isinstance(data, list) else [data]):
+            if not isinstance(root, dict):
+                continue
+            ctx = root.get("@context", "")
+            ctx_s = ctx if isinstance(ctx, str) else json.dumps(ctx)
+            if not ctx:
+                add("error", "Missing @context, so parsers can't tell this is schema.org data.", f"Block {i}")
+            elif "schema.org" not in ctx_s:
+                add("warning", f"@context is {ctx_s[:60]}, not schema.org.", f"Block {i}")
+            graph = root.get("@graph")
+            for n in (graph if isinstance(graph, list) else [root]):
+                if isinstance(n, dict):
+                    items.append(n)
+
+    id_index = {}
+    for b in blocks:
+        if b["valid"]:
+            _walk(b["data"], lambda n: id_index.setdefault(n["@id"], n) if isinstance(n.get("@id"), str) and len(n) > 2 else None)
+
+    def resolve(v):
+        if isinstance(v, dict) and set(v.keys()) <= {"@id", "@type"} and v.get("@id") in id_index:
+            return id_index[v["@id"]]
+        return v
+
+    evaluated = []
+    for n in items:
+        types = _types(n)
+        sid = _short_id(n.get("@id"))
+        if not types:
+            add("warning", "An item has no @type, so its meaning is unclear.", sid or "Untyped item")
+            continue
+        label = " / ".join(types)
+        where = f"{label} {sid}".strip()
+        fam = next((schema_family(t) for t in types if schema_family(t) in SCHEMA_RULES), None)
+        req = SCHEMA_RULES[fam]["required"] if fam else []
+        rec = SCHEMA_RULES[fam]["recommended"] if fam else []
+        missing_req = [p for p in req if not _has(n, p)]
+        missing_rec = [p for p in rec if not _has(n, p)]
+        for p in missing_req:
+            add("error", f'{label} is missing "{p}", a required property.', where)
+        if missing_rec:
+            add("suggestion", f"{label} could add: {', '.join(missing_rec)}.", where)
+
+        if fam == "LocalBusiness" and _has(n, "address"):
+            addr = resolve(n["address"])
+            if isinstance(addr, str):
+                add("warning", "The address is plain text. Use a PostalAddress with separate street, city, postal code and country.", where)
+            elif isinstance(addr, dict):
+                miss = [p for p in ("streetAddress", "addressLocality", "postalCode", "addressCountry") if not _has(addr, p)]
+                if miss:
+                    add("warning", f"The address is missing {', '.join(miss)}.", where)
+        if fam == "FAQPage" and _has(n, "mainEntity"):
+            qs = n["mainEntity"] if isinstance(n["mainEntity"], list) else [n["mainEntity"]]
+            bad = 0
+            for q in qs:
+                q = resolve(q)
+                ans = resolve(q.get("acceptedAnswer")) if isinstance(q, dict) else None
+                if not (isinstance(q, dict) and q.get("name") and isinstance(ans, dict) and ans.get("text")):
+                    bad += 1
+            if bad:
+                add("error", f"{bad} of {len(qs)} FAQ questions {'is' if bad == 1 else 'are'} missing a question name or an answer text.", where)
+        if fam == "BreadcrumbList" and _has(n, "itemListElement"):
+            els = n["itemListElement"] if isinstance(n["itemListElement"], list) else [n["itemListElement"]]
+            bad = sum(1 for e in els if not (isinstance(e, dict) and "position" in e and (e.get("name") or isinstance(e.get("item"), dict))))
+            if bad:
+                add("warning", f"{bad} breadcrumb {'entry is' if bad == 1 else 'entries are'} missing a position or name.", where)
+        if fam == "Product" and _has(n, "offers"):
+            offers = n["offers"] if isinstance(n["offers"], list) else [n["offers"]]
+            for o in offers:
+                o = resolve(o)
+                if isinstance(o, dict) and not ((o.get("price") or o.get("lowPrice")) and o.get("priceCurrency")):
+                    add("warning", "An offer is missing price or priceCurrency.", where)
+                    break
+        for p in DATE_PROPS:
+            v = n.get(p)
+            if isinstance(v, str) and v and not re.match(r"^\d{4}-\d{2}-\d{2}", v):
+                add("warning", f'"{p}" is "{v[:40]}", not an ISO date like 2026-05-31.', where)
+        for p in URL_PROPS:
+            v = n.get(p)
+            if isinstance(v, str) and v and not v.startswith(("http://", "https://")):
+                add("warning", f'"{p}" is a relative or invalid URL ("{v[:60]}"). Use a full https:// address.', where)
+        same = n.get("sameAs")
+        if same:
+            links = same if isinstance(same, list) else [same]
+            bad_links = [x for x in links if not (isinstance(x, str) and x.startswith(("http://", "https://")))]
+            if bad_links:
+                add("warning", f"{len(bad_links)} sameAs {'link is' if len(bad_links) == 1 else 'links are'} not a full URL: {', '.join(str(x)[:40] for x in bad_links[:3])}.", where)
+        for sv in _strings(n):
+            if PLACEHOLDER_RE.search(sv):
+                add("warning", f'Possible placeholder text: "{sv[:60]}".', where)
+                break
+        if fam in ("Organization", "LocalBusiness"):
+            nm = n.get("name")
+            if isinstance(nm, str) and nm.strip() and nm.strip().lower() not in page_text.lower():
+                add("suggestion", f'The name "{nm[:60]}" does not appear in the page text. AI tools trust facts more when the page and the structured data agree.', where)
+            tel = n.get("telephone")
+            if isinstance(tel, str):
+                digits = re.sub(r"\D", "", tel)[-7:]
+                if len(digits) == 7 and digits not in re.sub(r"\D", "", page_text):
+                    add("suggestion", f'The phone number "{tel}" does not appear in the page text.', where)
+        evaluated.append({"types": types, "id": sid, "family": fam,
+                          "present": [p for p in req + rec if _has(n, p)],
+                          "missing_required": missing_req, "missing_recommended": missing_rec,
+                          "props": len([k for k in n if not k.startswith("@")])})
+
+    fams = {e["family"] for e in evaluated}
+    path_depth = len([x for x in urllib.parse.urlsplit(page_url).path.split("/") if x])
+    if not blocks:
+        add("error", "No JSON-LD structured data found. AI tools and search engines use it to confirm facts like your company name, address and services.")
+    elif evaluated:
+        if not ({"Organization", "LocalBusiness"} & fams):
+            add("warning", "No Organization or LocalBusiness item. Add one (usually site-wide) so AI tools can confirm your name, logo, contact details and profiles.")
+        if "WebSite" not in fams:
+            add("suggestion", "No WebSite item. It tells AI tools your site's name and main address.")
+        if "BreadcrumbList" not in fams and path_depth > 0:
+            add("suggestion", "No BreadcrumbList item. Breadcrumbs show where this page sits in your site.")
+    question_heads = [h for h in headings if h["text"].rstrip().endswith("?")]
+    if len(question_heads) >= 2 and "FAQPage" not in fams:
+        add("suggestion", f"{len(question_heads)} headings are questions, but there is no FAQPage item. Marking them up may help AI answer engines quote your answers.")
+
+    facts = []
+
+    def fact(label, v, src):
+        v = resolve(v)
+        if v in (None, "", [], {}):
+            return
+        if isinstance(v, dict):
+            if v.get("@type") == "PostalAddress" or "streetAddress" in v:
+                v = _format_address(v)
+            else:
+                v = v.get("name") or v.get("url") or v.get("contentUrl") or v.get("@id") or ""
+        elif isinstance(v, list):
+            vals = []
+            for x in v[:10]:
+                x = resolve(x)
+                vals.append(str(x.get("name") or x.get("@id") or "") if isinstance(x, dict) else str(x))
+            v = ", ".join(x for x in vals if x)
+        if v:
+            facts.append({"label": label, "value": str(v)[:300], "source": src})
+
+    for n in items:
+        types = _types(n)
+        fam = next((schema_family(t) for t in types if schema_family(t) in SCHEMA_RULES), None)
+        src = " / ".join(types)
+        if fam in ("Organization", "LocalBusiness"):
+            for prop, label in (("name", "Name"), ("legalName", "Legal name"), ("description", "Description"),
+                                ("url", "Website"), ("logo", "Logo"), ("telephone", "Phone"), ("email", "Email"),
+                                ("address", "Address"), ("areaServed", "Area served"), ("foundingDate", "Founded"),
+                                ("priceRange", "Price range"), ("openingHours", "Opening hours"), ("sameAs", "Profiles")):
+                fact(label, n.get(prop), src)
+        elif fam == "WebSite":
+            fact("Site name", n.get("name"), src)
+        elif fam == "Article":
+            fact("Headline", n.get("headline"), src)
+            fact("Author", n.get("author"), src)
+            fact("Published", n.get("datePublished"), src)
+        elif fam == "Product":
+            fact("Product", n.get("name"), src)
+            fact("Brand", n.get("brand"), src)
+            off = resolve(n.get("offers"))
+            if isinstance(off, list) and off:
+                off = resolve(off[0])
+            if isinstance(off, dict):
+                fact("Price", f"{off.get('price') or off.get('lowPrice') or ''} {off.get('priceCurrency') or ''}".strip(), src)
+        elif fam == "Service":
+            fact("Service", n.get("name"), src)
+            fact("Service area", n.get("areaServed"), src)
+        elif fam == "FAQPage":
+            q = n.get("mainEntity")
+            fact("FAQ questions", len(q) if isinstance(q, list) else (1 if q else 0), src)
+    seen, uniq = set(), []
+    for f in facts:
+        k = (f["label"], f["value"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(f)
+
+    suggested = ""
+    if not ({"Organization", "LocalBusiness"} & fams):
+        parts = urllib.parse.urlsplit(page_url)
+        home = f"{parts.scheme}://{parts.netloc}/"
+        name = meta.get("og:site_name") or (re.split(r"\s+[|\-–—]\s+", title)[-1].strip() if title else parts.netloc)
+        snippet = {"@context": "https://schema.org", "@type": "Organization", "@id": home + "#organization",
+                   "name": name, "url": home, "logo": "REPLACE with your logo URL"}
+        if meta.get("og:image"):
+            snippet["image"] = meta["og:image"]
+        if meta.get("description"):
+            snippet["description"] = meta["description"]
+        snippet["sameAs"] = ["REPLACE with your LinkedIn URL", "REPLACE with your Facebook URL"]
+        snippet["contactPoint"] = {"@type": "ContactPoint", "telephone": "REPLACE with your phone",
+                                   "contactType": "customer service"}
+        suggested = json.dumps(snippet, indent=2, ensure_ascii=False)
+
+    jsonld = [b["data"] for b in blocks if b["valid"]]
+    if len(json.dumps(jsonld)) > 80000:
+        jsonld = []
+    counts = {lvl: sum(1 for x in issues if x["level"] == lvl) for lvl in ("error", "warning", "suggestion")}
+    order = {"error": 0, "warning": 1, "suggestion": 2}
+    issues.sort(key=lambda x: order[x["level"]])
+    return {"blocks": len(blocks), "items": evaluated, "types": sorted({t for e in evaluated for t in e["types"]}),
+            "issues": issues, "counts": counts, "facts": uniq[:40], "suggested": suggested,
+            "microdata_types": sorted(set(MICRODATA_RE.findall(html))), "jsonld": jsonld}
+
+
 def analyze(url, bot, rp):
     bid, label, token, ua, note, _ = bot
     r = http_get(url, ua)
@@ -321,7 +663,7 @@ def analyze(url, bot, rp):
            "insecure_ssl": r["insecure_ssl"], "x_robots_tag": r["headers"].get("x-robots-tag", ""),
            "server": r["headers"].get("server", ""), "cf_cache": r["headers"].get("cf-cache-status", ""),
            "title": "", "meta": {}, "canonical": "", "headings": [], "words": 0, "text": "",
-           "links": 0, "images": 0, "images_no_alt": 0, "counters": [], "challenge": False}
+           "links": 0, "images": 0, "images_no_alt": 0, "counters": [], "challenge": False, "structured": None}
     html = r["html"]
     if html:
         p = PageExtractor()
@@ -336,6 +678,12 @@ def analyze(url, bot, rp):
                     "words": len(re.findall(r"\w+", text)), "links": p.links,
                     "images": p.images, "images_no_alt": p.images_no_alt,
                     "counters": find_counters(html)})
+        try:
+            res["structured"] = analyze_structured(html, text, url, p.meta, p.headings, res["title"])
+        except Exception as e:
+            res["structured"] = {"error": f"{type(e).__name__}: {e}", "blocks": 0, "items": [], "types": [],
+                                 "issues": [], "counts": {"error": 0, "warning": 0, "suggestion": 0},
+                                 "facts": [], "suggested": "", "microdata_types": [], "jsonld": []}
         low = html[:20000].lower()
         res["challenge"] = any(mk in low for mk in CHALLENGE_MARKERS) and res["words"] < 400
     if token is None:
@@ -758,6 +1106,12 @@ label.fld{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
 .topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
 .signout{color:var(--accent);font-size:14px}
 #keyStatus{font-size:13.5px;margin:0 0 8px;color:var(--muted)}
+ul.issues{list-style:none;margin:0;padding:0}
+ul.issues li{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+ul.issues li:last-child{border-bottom:0}
+ul.issues .where{display:block;color:var(--muted);font-size:12.5px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 6px}
+a.links{color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:8px}
 .hidden{display:none}
 </style>
 </head>
@@ -785,8 +1139,15 @@ label.fld{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
     <div id="details"></div>
   </section>
 
+  <section class="panel hidden" id="schemaPanel">
+    <h2>3. Structured data</h2>
+    <p class="hint">Checks the JSON-LD schema in the HTML each bot received: what AI tools can learn from it, what is broken, and what is missing.</p>
+    <div class="row" style="margin-bottom:10px"><label class="fld" for="schemaBot" style="margin:0">As received by</label><select id="schemaBot" style="width:auto"></select></div>
+    <div id="schemaBody"></div>
+  </section>
+
   <section class="panel hidden" id="askPanel">
-    <h2>3. Ask AI models about this view</h2>
+    <h2>4. Ask AI models about this view</h2>
     <p class="hint">Sends the text one bot received to each model through OpenRouter, with instructions to answer only from that text. This shows how a model interprets what the crawler saw; it is not the model's own crawler visiting your site.</p>
     <div class="grid2">
       <div>
@@ -799,6 +1160,7 @@ label.fld{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
       <div>
         <label class="fld" for="viewBot">Send the view of</label>
         <select id="viewBot"></select>
+        <label class="inline-check"><input type="checkbox" id="incSchema"> Also send the structured data (JSON-LD) this bot received</label>
       </div>
     </div>
     <div class="grid2" style="margin-top:14px">
@@ -939,6 +1301,7 @@ async function runCheck(){
 function render(data){
   $('#resultsPanel').classList.remove('hidden');
   $('#askPanel').classList.remove('hidden');
+  $('#schemaPanel').classList.remove('hidden');
   const rb = data.robots;
   $('#robotsLine').innerHTML = rb.status === 200
     ? `robots.txt found at <a href="${esc(rb.url)}" target="_blank" rel="noopener">${esc(rb.url)}</a>.`
@@ -960,9 +1323,10 @@ function render(data){
       <td class="num">${r.words.toLocaleString()}</td>
       <td>${diff}</td>
       <td class="counters">${ci.html}${ci.bad ? ` <span class="chip bad">${ci.bad} not final</span>` : ''}</td>
+      <td>${schemaChip(r, base)}</td>
     </tr>`;
   }).join('');
-  $('#summary').innerHTML = `<thead><tr><th>Bot</th><th>HTTP</th><th>robots.txt</th><th>Time</th><th>Size</th><th>Words</th><th>vs browser</th><th>Animated counters</th></tr></thead><tbody>${rows}</tbody>`;
+  $('#summary').innerHTML = `<thead><tr><th>Bot</th><th>HTTP</th><th>robots.txt</th><th>Time</th><th>Size</th><th>Words</th><th>vs browser</th><th>Animated counters</th><th>Schema</th></tr></thead><tbody>${rows}</tbody>`;
 
   $('#details').innerHTML = data.results.map(r => {
     const heads = r.headings.length
@@ -1003,7 +1367,68 @@ function render(data){
   const sel = $('#viewBot'); const prev = sel.value;
   sel.innerHTML = data.results.filter(r => r.text).map(r => `<option value="${r.id}">${esc(r.label)} (${r.words.toLocaleString()} words)</option>`).join('');
   sel.value = data.results.some(r => r.id === prev) ? prev : (data.results.find(r => r.id === 'gptbot' && r.text) ? 'gptbot' : sel.options[0]?.value);
+
+  const ss = $('#schemaBot'); const sprev = ss.value;
+  ss.innerHTML = data.results.map(r => `<option value="${r.id}">${esc(r.label)}</option>`).join('');
+  ss.value = data.results.some(r => r.id === sprev) ? sprev : (data.results.some(r => r.id === 'gptbot') ? 'gptbot' : 'browser');
+  renderSchema();
 }
+
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function schemaChip(r, base){
+  const s = r.structured;
+  if (!s) return '<span class="chip na">–</span>';
+  if (!s.items.length) return '<span class="chip bad">none</span>';
+  let h = `<span class="chip ${s.counts.error ? 'warn' : 'ok'}">${plural(s.items.length, 'item')}</span>`;
+  if (base && base.structured && r.id !== 'browser' && s.types.join() !== base.structured.types.join())
+    h += ' <span class="chip bad">differs from browser</span>';
+  return h;
+}
+const LEVEL = {error: ['bad', 'Error'], warning: ['warn', 'Warning'], suggestion: ['na', 'Suggestion']};
+function renderSchema(){
+  if (!LAST) return;
+  const r = LAST.results.find(x => x.id === $('#schemaBot').value) || LAST.results[0];
+  const s = r && r.structured;
+  if (!s){ $('#schemaBody').innerHTML = '<div class="note">This bot received no page content, so there is nothing to check.</div>'; return; }
+  const c = s.counts;
+  let h = `<div class="chips">
+    <span class="chip ${s.items.length ? 'ok' : 'bad'}">${plural(s.items.length, 'item')} in ${plural(s.blocks, 'JSON-LD block')}</span>
+    <span class="chip ${c.error ? 'bad' : 'ok'}">${plural(c.error, 'error')}</span>
+    <span class="chip ${c.warning ? 'warn' : 'ok'}">${plural(c.warning, 'warning')}</span>
+    <span class="chip na">${plural(c.suggestion, 'suggestion')}</span></div>`;
+  if (s.types.length) h += `<div class="note" style="margin:0 0 6px">Types: ${s.types.map(esc).join(', ')}</div>`;
+  if (s.microdata_types.length) h += `<div class="note" style="margin:0 0 6px">Microdata also found (listed only, not checked): ${s.microdata_types.map(esc).join(', ')}</div>`;
+  if (s.error) h += `<p class="chip bad">Check failed: ${esc(s.error)}</p>`;
+  if (s.facts.length){
+    h += `<div class="subhead">What AI tools can read from your structured data</div><dl class="kv">${
+      s.facts.map(f => `<dt>${esc(f.label)}</dt><dd>${esc(f.value)} <span class="note" style="margin:0">${esc(f.source)}</span></dd>`).join('')}</dl>`;
+  }
+  if (s.issues.length){
+    h += `<div class="subhead">Findings</div><ul class="issues">${s.issues.map(i =>
+      `<li><span class="chip ${LEVEL[i.level][0]}">${LEVEL[i.level][1]}</span><span>${esc(i.msg)}<span class="where">${esc(i.where)}</span></span></li>`).join('')}</ul>`;
+  } else {
+    h += '<div class="note">No problems found.</div>';
+  }
+  if (s.items.length){
+    h += `<div class="subhead">Items</div><div class="tablewrap"><table><thead><tr><th>Type</th><th>Key properties present</th><th>Missing required</th><th>Could add</th></tr></thead><tbody>${
+      s.items.map(it => `<tr><td><strong>${esc(it.types.join(' / '))}</strong> <span class="note" style="margin:0">${esc(it.id)}</span></td>
+        <td>${it.present.length ? esc(it.present.join(', ')) : (it.family ? '–' : `<span class="note" style="margin:0">${it.props} properties (type not checked in detail)</span>`)}</td>
+        <td>${it.missing_required.length ? `<span class="chip bad">${esc(it.missing_required.join(', '))}</span>` : '–'}</td>
+        <td>${it.missing_recommended.length ? esc(it.missing_recommended.join(', ')) : '–'}</td></tr>`).join('')}</tbody></table></div>`;
+  }
+  if (s.suggested){
+    h += `<div class="subhead">Suggested starting point <a class="links" style="font-weight:400" id="copySuggested">Copy</a></div>
+      <div class="note" style="margin:0 0 4px">An Organization item built from this page. Replace the REPLACE values, and for a local service company use a LocalBusiness type such as HVACBusiness with a full address. Add it site-wide, for example in your SEO plugin's schema settings.</div>
+      <pre class="text" id="suggestedJson">${esc(s.suggested)}</pre>`;
+  }
+  if (s.jsonld.length){
+    h += `<details class="bot"><summary>Raw JSON-LD</summary><div class="dbody"><pre class="text">${esc(JSON.stringify(s.jsonld, null, 2))}</pre></div></details>`;
+  }
+  $('#schemaBody').innerHTML = h;
+  const cp = $('#copySuggested');
+  if (cp) cp.onclick = () => navigator.clipboard.writeText(s.suggested).then(() => { cp.textContent = 'Copied'; setTimeout(() => cp.textContent = 'Copy', 1500); });
+}
+$('#schemaBot').onchange = renderSchema;
 
 $('#loadModels').onclick = async () => {
   $('#loadModels').disabled = true; $('#askStatus').textContent = 'Loading model list…';
@@ -1033,6 +1458,9 @@ $('#askBtn').onclick = async () => {
   const view = LAST.results.find(r => r.id === $('#viewBot').value);
   if (!view){ $('#askStatus').textContent = 'Pick a bot view that has readable text.'; return; }
   const question = $('#question').value.trim() || QUESTIONS.numbers;
+  let text = view.text;
+  if ($('#incSchema').checked && view.structured && view.structured.jsonld.length)
+    text += '\n\nSTRUCTURED DATA (JSON-LD) IN THE PAGE:\n' + JSON.stringify(view.structured.jsonld).slice(0, 15000);
   $('#askBtn').disabled = true;
   let done = 0;
   $('#askStatus').textContent = `Asking ${models.length} models using the ${view.label} view…`;
@@ -1041,7 +1469,7 @@ $('#askBtn').onclick = async () => {
   await Promise.all(models.map(async (model, i) => {
     const card = $('#ans' + i);
     try{
-      const r = await post('/api/ask', {key, model, bot: view.label, url: LAST.url, text: view.text, question});
+      const r = await post('/api/ask', {key, model, bot: view.label, url: LAST.url, text, question});
       if (r.error){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = r.error; }
       else{
         const tok = r.usage && r.usage.total_tokens ? `, ${r.usage.total_tokens.toLocaleString()} tokens` : '';
