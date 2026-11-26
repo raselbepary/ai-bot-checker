@@ -7,6 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 COPY app.py .
+COPY web ./web
 
 RUN useradd --system --uid 10001 appuser && mkdir -p /data && chown appuser /data
 USER appuser
