@@ -9,6 +9,13 @@ WORKDIR /app
 COPY app.py .
 COPY web ./web
 
+# Headless browser for the JavaScript gap view (Chromium headless shell only)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN pip install --no-cache-dir playwright==1.49.1 \
+    && playwright install --with-deps --only-shell chromium \
+    && pip uninstall -y playwright \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
+
 RUN useradd --system --uid 10001 appuser && mkdir -p /data && chown appuser /data
 USER appuser
 
