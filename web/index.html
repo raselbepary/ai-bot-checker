@@ -359,7 +359,20 @@
           <div>
             <label class="fld" for="citePrompts">Questions <span class="note" style="margin:0;font-weight:400">one per line, up to 10, written the way a customer would ask</span></label>
             <textarea id="citePrompts" rows="7" placeholder="Best HVAC company in Dallas&#10;Who installs heat pumps near Plano, TX?&#10;Is a heat pump worth it in North Texas?"></textarea>
+            <div class="links"><a id="qOpen">Suggest questions with AI</a></div>
           </div>
+        </div>
+        <div class="hidden ideas" id="qIdeas">
+          <div class="subhead" style="margin-top:0">Question ideas</div>
+          <div class="note" style="margin:0 0 10px">Reads the site and drafts questions real customers might ask an AI assistant. They leave out the brand name, so a test shows whether AI recommends the business on its own.</div>
+          <div class="row">
+            <input id="qPersonas" type="text" placeholder="Customer types, optional: homeowner, property manager, small business owner" style="flex:1;min-width:220px" aria-label="Customer types">
+            <select id="qCount" style="width:auto" aria-label="Number of ideas"><option>8</option><option selected>12</option><option>16</option><option>20</option></select>
+            <button id="qGen">Generate ideas</button>
+          </div>
+          <div class="status" id="qStatus"></div>
+          <div id="qList" class="idealist"></div>
+          <div class="row hidden" id="qActions" style="margin-top:10px"><button id="qAdd">Add selected to questions</button><button class="ghost hidden" id="qSaveProj">Also save to project</button></div>
         </div>
         <div class="grid2" style="margin-top:14px">
           <div>
@@ -378,6 +391,7 @@
             </select>
             <label class="fld" for="citeLocation" style="margin-top:12px">Searcher location <span class="note" style="margin:0;font-weight:400">optional: City, Region, Country code; native search only</span></label>
             <input id="citeLocation" type="text" placeholder="Dallas, Texas, US">
+            <label class="inline-check"><input type="checkbox" id="citeSentiment" checked> Rate how answers describe your brand (one extra short call per answer that names you)</label>
           </div>
         </div>
         <div class="row" style="margin-top:16px">
@@ -393,6 +407,8 @@
       <div id="citeResults" class="hidden">
         <section class="panel">
           <div class="chips" id="citeSummary"></div>
+          <div class="note" style="margin:2px 0 0">Visibility score: up to 40 points when an answer names you, up to 40 when it cites your site (more for a higher position), and up to 20 for how positively you are described, averaged across answers.</div>
+          <div id="citeTrend"></div>
           <div class="subhead">Share of voice</div>
           <div class="tablewrap"><table id="citeSov"></table></div>
         </section>
@@ -403,6 +419,16 @@
           </div>
           <div class="note" style="margin:4px 0 10px">Cited #N means your site was the Nth source. Click a result to read the answer.</div>
           <div class="tablewrap"><table id="citeMatrix"></table></div>
+        </section>
+        <section class="panel">
+          <h2>Sources AI cited</h2>
+          <div class="note" style="margin:4px 0 10px">Websites the models used as sources across all answers. Third-party sites cited often are where being listed, reviewed or mentioned matters most.</div>
+          <div class="tablewrap"><table id="citeSources"></table></div>
+        </section>
+        <section class="panel">
+          <h2>Citation opportunities</h2>
+          <div class="note" style="margin:4px 0 10px">Third-party pages AI cited in answers where your site was not cited. Being listed, reviewed or mentioned on them can help AI recommend you.</div>
+          <div id="citeOpps"></div>
         </section>
         <h2 class="sub">Answers</h2>
         <div id="citeAnswers"></div>
