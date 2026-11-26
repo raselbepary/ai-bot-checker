@@ -20,6 +20,7 @@
       <a href="#/scan" data-page="scan">Site scan</a>
       <a href="#/schema" data-page="schema">Structured data</a>
       <a href="#/access" data-page="access">AI access</a>
+      <a href="#/logs" data-page="logs">Crawler visits</a>
       <a href="#/llms" data-page="llms">llms.txt</a>
       <a href="#/ai" data-page="ai">AI test</a>
       <a href="#/cite" data-page="cite">AI citations</a>
@@ -187,6 +188,59 @@
           <pre class="text" id="robotsOut"></pre>
           <div class="note">To apply it on WordPress, use your SEO plugin's robots.txt editor (Yoast SEO: Tools → File editor; Rank Math: General Settings → Edit robots.txt) or replace the robots.txt file in the site's main folder. robots.txt cannot undo a server block: if a crawler shows “Blocked by server”, check Cloudflare (Security → Bots) or your security plugin.</div>
           <details class="bot"><summary>Current robots.txt</summary><div class="dbody"><pre class="text" id="robotsCurrent"></pre></div></details>
+        </section>
+      </div>
+    </div>
+
+    <!-- Crawler visits -->
+    <div class="page hidden" id="page-logs">
+      <header class="pagehead">
+        <h1>Crawler visits</h1>
+        <p class="lede">Upload a server access log to see which AI crawlers really visited, which pages they read and what they got back. Fake bots are filtered out by checking each visitor's IP address against the lists AI companies publish.</p>
+      </header>
+      <section class="panel">
+        <div class="row">
+          <input id="logFile" type="file" accept=".log,.txt,.gz,.json,.jsonl,.ndjson,text/plain,application/gzip" aria-label="Log file" style="flex:1;min-width:240px">
+          <button id="logBtn">Analyze log</button>
+        </div>
+        <div class="status" id="logStatus"></div>
+        <div class="progress hidden" id="logProgress"><div id="logBar"></div></div>
+        <details class="once" style="margin-top:10px">
+          <summary>Where to find the log, and supported formats</summary>
+          <div class="note" style="margin-top:6px">cPanel: Metrics → Raw Access (download the .gz file for the domain). Plesk: Websites &amp; Domains → Logs. Your own server: Nginx or Apache access logs, usually in /var/log/nginx/ or /var/log/apache2/. Cloudflare: Logpush exports (JSON lines). Apache/Nginx “combined” format and JSON lines are supported, plain or .gz, up to 150 MB. The log is analyzed in memory and not stored on the server.</div>
+        </details>
+      </section>
+      <div id="logResults" class="hidden">
+        <section class="panel">
+          <div class="chips" id="logSummary"></div>
+          <ul class="issues" id="logWarnings" style="margin-top:6px"></ul>
+        </section>
+        <section class="panel">
+          <h2>AI crawlers that visited</h2>
+          <div class="tablewrap" style="margin-top:8px"><table id="logBots"></table></div>
+          <div class="note" id="logNotSeen"></div>
+        </section>
+        <section class="panel">
+          <h2>Visits per day</h2>
+          <div class="note" style="margin:2px 0 10px">Real and unverifiable visits in blue, fake bots in red.</div>
+          <div class="daybars" id="logDays"></div>
+        </section>
+        <section class="panel">
+          <div class="row" style="justify-content:space-between">
+            <h2 style="margin:0">Pages AI crawlers read</h2>
+            <div class="row"><input id="logFilter" type="text" placeholder="Filter pages…" style="width:220px" aria-label="Filter pages"><button class="ghost" id="logCsv">Download CSV</button></div>
+          </div>
+          <div class="note" id="logPagesNote" style="margin:6px 0 8px"></div>
+          <div class="tablewrap"><table id="logPages"></table></div>
+        </section>
+        <section class="panel" id="logErrorsPanel">
+          <h2>Errors crawlers got</h2>
+          <div class="tablewrap" style="margin-top:8px"><table id="logErrors"></table></div>
+        </section>
+        <section class="panel" id="logFakesPanel">
+          <h2>Fake bots</h2>
+          <div class="note" style="margin:2px 0 8px">Requests that used an AI crawler's name but came from an address outside that company's published list.</div>
+          <div class="tablewrap"><table id="logFakes"></table></div>
         </section>
       </div>
     </div>
