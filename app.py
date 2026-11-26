@@ -16,10 +16,13 @@ Environment variables
   OPENROUTER_API_KEY   Optional server-side OpenRouter key
   ALLOW_PRIVATE_URLS   Set to 1 to allow checking private/internal addresses (off by default)
   ALLOW_NO_AUTH        Set to 1 to run on a public interface without a password (not recommended)
+  DATA_DIR             Folder for saved settings (default ./data, /data in Docker)
+  SESSION_DAYS         How long a login lasts (default 30)
 
 No extra packages needed: uses only Python's standard library.
 """
 import base64
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -47,6 +50,12 @@ ALLOW_PRIVATE = os.environ.get("ALLOW_PRIVATE_URLS", "") == "1"
 ALLOW_NO_AUTH = os.environ.get("ALLOW_NO_AUTH", "") == "1"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 MAX_BODY = 5 * 1024 * 1024
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+SESSION_COOKIE = "abvc_session"
+SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "30"))
+_SETTINGS_LOCK = threading.Lock()
+_LOGIN_FAILS = {}
 TIMEOUT = 25
 MAX_BYTES = 6 * 1024 * 1024
 MAX_TEXT_FOR_AI = 40000
@@ -375,15 +384,103 @@ def run_check(url, bot_ids):
     return {"url": url, "robots": robots_info, "results": results, "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
+# ---------------------------------------------------------------- settings
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def storage_writable():
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        return os.access(DATA_DIR, os.W_OK)
+    except Exception:
+        return False
+
+
+def save_settings(updates):
+    with _SETTINGS_LOCK:
+        data = load_settings()
+        data.update(updates)
+        data = {k: v for k, v in data.items() if v is not None and v != ""}
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        os.replace(tmp, SETTINGS_FILE)
+        return data
+
+
+def key_hint(key):
+    return f"{key[:8]}…{key[-4:]}" if len(key) > 16 else "set"
+
+
+def settings_public():
+    s = load_settings()
+    saved = s.get("openrouter_key", "")
+    env = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if saved:
+        source, hint = "saved", key_hint(saved)
+    elif env:
+        source, hint = "env", key_hint(env)
+    else:
+        source, hint = "none", ""
+    return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
+            "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD)}
+
+
+# ---------------------------------------------------------------- sessions
+def _session_secret():
+    base = os.environ.get("SESSION_SECRET") or APP_PASSWORD or "local"
+    return hashlib.sha256(("abvc-session|" + APP_USERNAME + "|" + base).encode()).digest()
+
+
+def make_session():
+    exp = str(int(time.time()) + SESSION_DAYS * 86400)
+    sig = hmac.new(_session_secret(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def valid_session(token):
+    try:
+        exp, sig = token.split(".", 1)
+        if int(exp) < time.time():
+            return False
+        good = hmac.new(_session_secret(), exp.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, good)
+    except Exception:
+        return False
+
+
+def login_allowed(ip):
+    now = time.time()
+    recent = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < 900]
+    _LOGIN_FAILS[ip] = recent
+    return len(recent) < 10
+
+
+def record_login_fail(ip):
+    _LOGIN_FAILS.setdefault(ip, []).append(time.time())
+
+
 # ---------------------------------------------------------------- OpenRouter
 def openrouter_key(given):
-    return (given or "").strip() or os.environ.get("OPENROUTER_API_KEY", "").strip()
+    return ((given or "").strip() or load_settings().get("openrouter_key", "")
+            or os.environ.get("OPENROUTER_API_KEY", "").strip())
 
 
 def ask_model(key, model, bot_label, url, text, question):
     key = openrouter_key(key)
     if not key:
-        return {"model": model, "error": "No OpenRouter API key. Paste it in the page or set OPENROUTER_API_KEY."}
+        return {"model": model, "error": "No OpenRouter API key. Save one in the page or set OPENROUTER_API_KEY."}
     truncated = len(text) > MAX_TEXT_FOR_AI
     content = text[:MAX_TEXT_FOR_AI]
     system = (
@@ -450,68 +547,109 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, headers=None):
         b = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(b)
 
-    def _json(self, obj, code=200):
-        self._send(code, json.dumps(obj), "application/json; charset=utf-8")
+    def _json(self, obj, code=200, headers=None):
+        self._send(code, json.dumps(obj), "application/json; charset=utf-8", headers)
+
+    def _redirect(self, location, cookie=None):
+        self.send_response(303)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _client_ip(self):
+        fwd = self.headers.get("X-Forwarded-For", "")
+        return fwd.split(",")[0].strip() if fwd else self.client_address[0]
+
+    def _cookie(self, name):
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return ""
+
+    def _secure(self):
+        return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
 
     def _authorized(self):
         if not APP_PASSWORD:
             return True
-        header = self.headers.get("Authorization", "")
-        if not header.startswith("Basic "):
-            return False
-        try:
-            user, _, pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
-        except Exception:
-            return False
-        return (hmac.compare_digest(user.encode(), APP_USERNAME.encode())
-                and hmac.compare_digest(pw.encode(), APP_PASSWORD.encode()))
+        return valid_session(self._cookie(SESSION_COOKIE))
 
     def _deny(self):
-        body = b"Login required"
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="AI Bot View Checker", charset="UTF-8"')
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._json({"error": "Login required", "login": True}, 401)
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/health":
             return self._json({"ok": True})
+        if path == "/login":
+            if self._authorized():
+                return self._redirect("/")
+            return self._send(200, LOGIN_PAGE, "text/html; charset=utf-8")
+        if path == "/logout":
+            return self._redirect("/login", f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         if not self._authorized():
-            return self._deny()
+            return self._deny() if path.startswith("/api/") else self._redirect("/login")
         if path == "/":
             self._send(200, PAGE, "text/html; charset=utf-8")
         elif path == "/api/bots":
             self._json([{"id": b[0], "label": b[1], "note": b[4], "default": b[5]} for b in BOTS])
         elif path == "/api/models":
             self._json(list_models())
-        elif path == "/api/env-key":
-            self._json({"has_env_key": bool(os.environ.get("OPENROUTER_API_KEY"))})
+        elif path == "/api/settings":
+            self._json(settings_public())
         else:
             self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
-        if not self._authorized():
-            return self._deny()
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            return self._json({"error": "Expected a JSON request"}, 415)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > MAX_BODY:
                 return self._json({"error": "Request too large"}, 413)
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError
         except Exception:
             return self._json({"error": "Invalid request body"}, 400)
+
+        if path == "/api/login":
+            if not APP_PASSWORD:
+                return self._json({"ok": True})
+            ip = self._client_ip()
+            if not login_allowed(ip):
+                return self._json({"error": "Too many failed attempts. Try again in 15 minutes."}, 429)
+            user = str(payload.get("username", ""))
+            pw = str(payload.get("password", ""))
+            if (hmac.compare_digest(user.encode(), APP_USERNAME.encode())
+                    and hmac.compare_digest(pw.encode(), APP_PASSWORD.encode())):
+                cookie = (f"{SESSION_COOKIE}={make_session()}; Path=/; Max-Age={SESSION_DAYS * 86400}; "
+                          f"HttpOnly; SameSite=Lax" + ("; Secure" if self._secure() else ""))
+                return self._json({"ok": True}, headers={"Set-Cookie": cookie})
+            record_login_fail(ip)
+            time.sleep(0.6)
+            return self._json({"error": "Wrong username or password."}, 401)
+
+        if not self._authorized():
+            return self._deny()
         try:
             if path == "/api/check":
                 if not payload.get("url"):
@@ -521,10 +659,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(ask_model(payload.get("key"), payload.get("model", ""),
                                             payload.get("bot", ""), payload.get("url", ""),
                                             payload.get("text", ""), payload.get("question", "")))
+            if path == "/api/settings":
+                if not storage_writable():
+                    return self._json({"error": f"The server cannot write to {DATA_DIR}. Add a persistent volume there."}, 500)
+                updates = {}
+                if payload.get("clear_key"):
+                    updates["openrouter_key"] = None
+                elif payload.get("openrouter_key"):
+                    updates["openrouter_key"] = str(payload["openrouter_key"]).strip()[:500]
+                if isinstance(payload.get("models"), list):
+                    updates["models"] = [str(m).strip()[:200] for m in payload["models"] if str(m).strip()][:50]
+                save_settings(updates)
+                return self._json(settings_public())
         except Exception as e:
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
         self._send(404, "Not found", "text/plain")
-
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -606,12 +755,15 @@ label.fld{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
 .answer.err .body{color:var(--bad)}
 .note{font-size:13px;color:var(--muted);margin-top:10px;max-width:80ch}
 .inline-check{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted);margin-top:6px}
+.topbar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.signout{color:var(--accent);font-size:14px}
+#keyStatus{font-size:13.5px;margin:0 0 8px;color:var(--muted)}
 .hidden{display:none}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>AI Bot View Checker</h1>
+  <div class="topbar"><h1>AI Bot View Checker</h1><a href="/logout" class="signout hidden" id="signout">Sign out</a></div>
   <p class="lede">Fetch a page as each AI crawler would, with no JavaScript, and compare what they receive. Then ask real models what they understand from that view.</p>
 
   <section class="panel">
@@ -639,9 +791,10 @@ label.fld{display:block;font-size:13.5px;font-weight:600;margin:0 0 5px}
     <div class="grid2">
       <div>
         <label class="fld" for="key">OpenRouter API key</label>
+        <div id="keyStatus"></div>
         <input id="key" type="password" placeholder="sk-or-..." autocomplete="off">
-        <label class="inline-check"><input type="checkbox" id="remember"> Remember on this computer</label>
-        <div class="note" id="envKeyNote"></div>
+        <div class="row" style="margin-top:8px"><button class="ghost" id="saveKey">Save key on server</button><button class="ghost hidden" id="clearKey">Remove saved key</button></div>
+        <div class="note" id="keyNote"></div>
       </div>
       <div>
         <label class="fld" for="viewBot">Send the view of</label>
@@ -681,21 +834,41 @@ const QUESTIONS = {
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
 let LAST = null;
+let SETTINGS = null;
 
 function store(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
 function load(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
-function unstore(k){ try{ localStorage.removeItem(k); }catch(e){} }
+
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  if (res.status === 401){ location.href = '/login'; throw new Error('Login required'); }
+  return res.json();
+}
+const post = (path, body) => api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+
+function renderKey(s){
+  SETTINGS = s;
+  const st = $('#keyStatus');
+  if (s.key_source === 'saved') st.innerHTML = `<span class="chip ok">Saved key in use</span> ${esc(s.key_hint)}`;
+  else if (s.key_source === 'env') st.innerHTML = `<span class="chip ok">Server key in use</span> ${esc(s.key_hint)} (from OPENROUTER_API_KEY)`;
+  else st.innerHTML = '<span class="chip warn">No key saved</span>';
+  $('#clearKey').classList.toggle('hidden', s.key_source !== 'saved');
+  $('#saveKey').disabled = !s.storage_ok;
+  $('#keyNote').textContent = s.storage_ok
+    ? 'A saved key works from any browser after you sign in. A key typed here without saving is used for this test only.'
+    : 'Saving is unavailable because the server has no writable storage. A key typed here is used for this test only.';
+}
 
 async function init(){
-  const bots = await (await fetch('/api/bots')).json();
+  const [bots, s] = await Promise.all([api('/api/bots'), api('/api/settings')]);
   $('#bots').innerHTML = bots.filter(b => b.id !== 'browser').map(b =>
     `<label><input type="checkbox" class="bot-cb" value="${b.id}" ${b.default ? 'checked' : ''}>
      <span>${esc(b.label)}<small>${esc(b.note)}</small></span></label>`).join('');
   $('#url').value = load('abvc_url') || '';
-  $('#models').value = load('abvc_models') || DEFAULT_MODELS.join('\n');
-  const k = load('abvc_key'); if (k){ $('#key').value = k; $('#remember').checked = true; }
-  const env = await (await fetch('/api/env-key')).json();
-  if (env.has_env_key) $('#envKeyNote').textContent = 'OPENROUTER_API_KEY is set on the server; leave the field empty to use it.';
+  const savedModels = s.models && s.models.length ? s.models.join('\n') : '';
+  $('#models').value = savedModels || load('abvc_models') || DEFAULT_MODELS.join('\n');
+  $('#signout').classList.toggle('hidden', !s.auth);
+  renderKey(s);
 }
 
 $('#selAll').onclick = () => document.querySelectorAll('.bot-cb').forEach(c => c.checked = true);
@@ -703,6 +876,25 @@ $('#selNone').onclick = () => document.querySelectorAll('.bot-cb').forEach(c => 
 $('#url').addEventListener('keydown', e => { if (e.key === 'Enter') runCheck(); });
 $('#checkBtn').onclick = runCheck;
 document.querySelectorAll('[data-q]').forEach(a => a.onclick = () => $('#question').value = QUESTIONS[a.dataset.q]);
+
+$('#saveKey').onclick = async () => {
+  const k = $('#key').value.trim();
+  if (!k){ $('#keyNote').textContent = 'Paste a key first, then save it.'; return; }
+  $('#saveKey').disabled = true;
+  try{
+    const s = await post('/api/settings', {openrouter_key: k});
+    if (s.error) throw new Error(s.error);
+    $('#key').value = ''; renderKey(s); $('#askStatus').textContent = 'Key saved on the server.';
+  }catch(e){ $('#keyNote').textContent = 'Could not save the key: ' + e.message; $('#saveKey').disabled = false; }
+};
+$('#clearKey').onclick = async () => {
+  if (!confirm('Remove the saved OpenRouter key from the server?')) return;
+  try{
+    const s = await post('/api/settings', {clear_key: true});
+    if (s.error) throw new Error(s.error);
+    renderKey(s); $('#askStatus').textContent = 'Saved key removed.';
+  }catch(e){ $('#keyNote').textContent = 'Could not remove the key: ' + e.message; }
+};
 
 function norm(v){ return String(v ?? '').replace(/[,\s]/g, ''); }
 function counterInfo(r){
@@ -735,13 +927,12 @@ async function runCheck(){
   $('#checkBtn').disabled = true;
   $('#checkStatus').textContent = `Fetching as ${bots.length + 1} user agents…`;
   try{
-    const res = await fetch('/api/check', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, bots})});
-    const data = await res.json();
+    const data = await post('/api/check', {url, bots});
     if (data.error){ $('#checkStatus').textContent = data.error; return; }
     LAST = data; render(data);
     $('#checkStatus').textContent = `Checked ${data.url} at ${data.checked_at}.`;
   }catch(e){
-    $('#checkStatus').textContent = 'Check failed: ' + e.message + '. Is the tool still running?';
+    $('#checkStatus').textContent = 'Check failed: ' + e.message;
   }finally{ $('#checkBtn').disabled = false; }
 }
 
@@ -795,7 +986,7 @@ function render(data){
           <dt>Canonical</dt><dd>${esc(r.canonical) || '–'}</dd>
           <dt>Links / images</dt><dd>${r.links} links, ${r.images} images (${r.images_no_alt} without alt)</dd>
           <dt>Server / cache</dt><dd>${esc(r.server) || '–'}${r.cf_cache ? ' / Cloudflare ' + esc(r.cf_cache) : ''}</dd>
-          ${r.insecure_ssl ? '<dt>SSL</dt><dd><span class="chip warn">Certificate not verified on this computer</span></dd>' : ''}
+          ${r.insecure_ssl ? '<dt>SSL</dt><dd><span class="chip warn">Certificate could not be verified</span></dd>' : ''}
         </dl>
         <div class="subhead">Headings</div>${heads}
         <div class="subhead">Animated counters</div>${counters}
@@ -817,7 +1008,7 @@ function render(data){
 $('#loadModels').onclick = async () => {
   $('#loadModels').disabled = true; $('#askStatus').textContent = 'Loading model list…';
   try{
-    const d = await (await fetch('/api/models')).json();
+    const d = await api('/api/models');
     if (d.error) throw new Error(d.error);
     $('#modelList').innerHTML = d.models.map(m => `<option value="${esc(m)}">`).join('');
     $('#askStatus').textContent = `${d.models.length} models loaded. Type in the search box to add one.`;
@@ -834,10 +1025,11 @@ $('#addModel').onclick = () => {
 $('#askBtn').onclick = async () => {
   if (!LAST){ $('#askStatus').textContent = 'Check a page first.'; return; }
   const key = $('#key').value.trim();
-  if ($('#remember').checked && key) store('abvc_key', key); else unstore('abvc_key');
+  if (!key && SETTINGS && SETTINGS.key_source === 'none'){ $('#askStatus').textContent = 'Add an OpenRouter key first: paste it, and save it to reuse it.'; return; }
   const models = $('#models').value.split('\n').map(s => s.trim()).filter(Boolean);
-  store('abvc_models', models.join('\n'));
   if (!models.length){ $('#askStatus').textContent = 'Add at least one model ID.'; return; }
+  store('abvc_models', models.join('\n'));
+  if (SETTINGS && SETTINGS.storage_ok) post('/api/settings', {models}).catch(() => {});
   const view = LAST.results.find(r => r.id === $('#viewBot').value);
   if (!view){ $('#askStatus').textContent = 'Pick a bot view that has readable text.'; return; }
   const question = $('#question').value.trim() || QUESTIONS.numbers;
@@ -849,8 +1041,7 @@ $('#askBtn').onclick = async () => {
   await Promise.all(models.map(async (model, i) => {
     const card = $('#ans' + i);
     try{
-      const r = await (await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({key, model, bot: view.label, url: LAST.url, text: view.text, question})})).json();
+      const r = await post('/api/ask', {key, model, bot: view.label, url: LAST.url, text: view.text, question});
       if (r.error){ card.classList.add('err'); card.querySelector('.meta').textContent = 'Failed'; card.querySelector('.body').textContent = r.error; }
       else{
         const tok = r.usage && r.usage.total_tokens ? `, ${r.usage.total_tokens.toLocaleString()} tokens` : '';
@@ -870,6 +1061,65 @@ init();
 """
 
 
+LOGIN_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in – AI Bot View Checker</title>
+<style>
+:root{--paper:#eef1f4;--surface:#ffffff;--ink:#18232f;--muted:#5b6876;--line:#d3d9e0;--accent:#1f4e8c;--accent-ink:#ffffff;--bad:#b3261e;color-scheme:light}
+@media (prefers-color-scheme: dark){:root{--paper:#11161c;--surface:#19212a;--ink:#e4e9ef;--muted:#97a3b0;--line:#2c3743;--accent:#6fa3e8;--accent-ink:#0d1620;--bad:#ff8a80;color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+main{min-height:100vh;display:grid;place-items:center;padding:24px}
+form{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:28px}
+h1{font-size:22px;line-height:1.25;margin:0 0 4px}
+p{color:var(--muted);margin:0 0 18px;font-size:14px}
+label{display:block;font-size:13.5px;font-weight:600;margin:14px 0 5px}
+input{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:7px;padding:10px 11px;width:100%}
+input:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{margin-top:22px;width:100%;font:inherit;font-weight:600;border:1px solid var(--accent);background:var(--accent);
+  color:var(--accent-ink);border-radius:7px;padding:10px 16px;cursor:pointer}
+button:disabled{opacity:.6;cursor:progress}
+.err{color:var(--bad);font-size:14px;min-height:1.4em;margin-top:12px}
+</style>
+</head>
+<body>
+<main>
+<form id="f">
+  <h1>AI Bot View Checker</h1>
+  <p>Sign in to check pages and run model tests.</p>
+  <label for="u">Username</label>
+  <input id="u" name="username" autocomplete="username" required>
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">Sign in</button>
+  <div class="err" id="e" role="alert"></div>
+</form>
+</main>
+<script>
+document.getElementById('f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const b = document.getElementById('b'), err = document.getElementById('e');
+  b.disabled = true; err.textContent = '';
+  try{
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: document.getElementById('u').value, password: document.getElementById('p').value})});
+    const d = await r.json();
+    if (r.ok && d.ok){ location.href = '/'; return; }
+    err.textContent = d.error || 'Sign in failed.';
+  }catch(x){ err.textContent = 'Could not reach the server. Try again.'; }
+  b.disabled = false;
+});
+document.getElementById('u').focus();
+</script>
+</body>
+</html>
+"""
+
+
 def main():
     is_local = HOST in LOCAL_HOSTS
     if not is_local and not APP_PASSWORD and not ALLOW_NO_AUTH:
@@ -880,6 +1130,7 @@ def main():
     url = f"http://localhost:{PORT}"
     print(f"\n  AI Bot View Checker listening on {HOST}:{PORT}", flush=True)
     print(f"  Login: {'on (user ' + APP_USERNAME + ')' if APP_PASSWORD else 'off'}", flush=True)
+    print(f"  Settings folder: {DATA_DIR} ({'writable' if storage_writable() else 'NOT writable'})", flush=True)
     print(f"  Private URLs: {'allowed' if ALLOW_PRIVATE else 'blocked'}", flush=True)
     print("  Press Ctrl+C to stop.\n", flush=True)
     if is_local and not os.environ.get("NO_BROWSER"):
