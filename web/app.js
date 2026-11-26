@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', ai: 'AI test', settings: 'Settings'};
+const PAGES = {bots: 'Bot view', scan: 'Site scan', schema: 'Structured data', access: 'AI access', llms: 'llms.txt', ai: 'AI test', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,7 +33,7 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', p === 'settings' || p === 'scan');
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms'].includes(p));
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -521,6 +521,170 @@ async function loadScanHistory(){
   }catch(e){}
 }
 
+/* ---------------------------------------------------------------- AI access */
+let ACCESS = null;
+const VERDICT = {allowed: ['ok', 'Allowed'], blocked_robots: ['bad', 'Blocked by robots.txt'], blocked_server: ['bad', 'Blocked by server']};
+$('#accessBtn').onclick = runAccess;
+$('#accessUrl').addEventListener('keydown', e => { if (e.key === 'Enter') runAccess(); });
+$('#copyRobots').onclick = () => navigator.clipboard.writeText($('#robotsOut').textContent).then(() => {
+  $('#copyRobots').textContent = 'Copied'; setTimeout(() => $('#copyRobots').textContent = 'Copy', 1500); });
+
+async function runAccess(){
+  const url = $('#accessUrl').value.trim();
+  if (!url){ $('#accessStatus').textContent = 'Enter a page or site URL.'; return; }
+  store('abvc_access_url', url);
+  $('#accessBtn').disabled = true;
+  $('#accessStatus').textContent = 'Reading robots.txt and testing each crawler…';
+  try{
+    const d = await post('/api/access', {url});
+    if (d.error){ $('#accessStatus').textContent = d.error; return; }
+    ACCESS = d; renderAccess();
+    $('#accessStatus').textContent = `Checked ${d.url} at ${d.checked_at}.`;
+  }catch(e){ $('#accessStatus').textContent = 'Check failed: ' + e.message; }
+  finally{ $('#accessBtn').disabled = false; }
+}
+function liveChip(l){
+  if (l.error) return `<span class="chip bad" title="${esc(l.error)}">Failed</span>`;
+  if (l.challenge) return `<span class="chip bad">${l.status} challenge</span>`;
+  return `<span class="chip ${l.status < 300 ? 'ok' : l.status < 400 ? 'warn' : 'bad'}">${l.status}</span>`;
+}
+function renderAccess(){
+  const d = ACCESS;
+  $('#accessResults').classList.remove('hidden');
+  const n = k => d.agents.filter(a => a.verdict === k).length;
+  $('#accessSummary').innerHTML = `<span class="chip ${n('allowed') ? 'ok' : 'na'}">${n('allowed')} allowed</span>
+    <span class="chip ${n('blocked_robots') ? 'bad' : 'ok'}">${n('blocked_robots')} blocked by robots.txt</span>
+    <span class="chip ${n('blocked_server') ? 'bad' : 'ok'}">${n('blocked_server')} blocked by the server</span>`;
+  const notes = [];
+  notes.push(d.robots.status === 200
+    ? `robots.txt found at <a href="${esc(d.robots.url)}" target="_blank" rel="noopener">${esc(d.robots.url)}</a>.`
+    : `No robots.txt (${esc(d.robots.status ?? d.robots.error)}), so robots rules allow every crawler.`);
+  if (d.browser_error || (d.browser_status || 0) >= 400)
+    notes.push(`A normal browser request also failed (${esc(d.browser_error || 'HTTP ' + d.browser_status)}), so a block may not be specific to AI crawlers.`);
+  if (d.page_robots) notes.push(`This page's robots instructions: ${esc(d.page_robots)}.`);
+  $('#accessNotes').innerHTML = notes.join(' ');
+  $('#accessTable').innerHTML = `<thead><tr><th>Crawler</th><th>Used for</th><th>robots.txt</th><th>Live test</th><th>Result</th><th>Your choice</th></tr></thead><tbody>${
+    d.agents.map(a => `<tr>
+      <td><strong>${esc(a.token)}</strong><span class="sub">${esc(a.company)}</span></td>
+      <td>${esc(a.purpose)}</td>
+      <td>${a.robots_allowed === false ? '<span class="chip bad">Disallowed</span>' : a.robots_allowed ? '<span class="chip ok">Allowed</span>' : '<span class="chip na">–</span>'}</td>
+      <td>${a.live ? liveChip(a.live) : '<span class="note" style="margin:0">rule only</span>'}</td>
+      <td><span class="chip ${VERDICT[a.verdict][0]}">${VERDICT[a.verdict][1]}</span></td>
+      <td><select class="acc-choice" data-token="${esc(a.token)}" aria-label="Rule for ${esc(a.token)}">
+        <option value="allow" ${a.robots_allowed === false ? '' : 'selected'}>Allow</option>
+        <option value="block" ${a.robots_allowed === false ? 'selected' : ''}>Block</option></select></td>
+    </tr>`).join('')}</tbody>`;
+  $$('.acc-choice').forEach(s => s.onchange = renderRobots);
+  $('#robotsCurrent').textContent = d.robots.status === 200 ? (d.robots.text || '(empty file)') : '(no robots.txt file)';
+  renderRobots();
+}
+
+const GEN_MARK = '# AI crawlers: generated by AI Bot View Checker';
+function buildRobots(){
+  const text = ACCESS.robots.status === 200 ? (ACCESS.robots.text || '') : '';
+  const choices = $$('.acc-choice').map(s => ({token: s.dataset.token, block: s.value === 'block'}));
+  const ai = new Set(choices.map(c => c.token.toLowerCase()));
+  const pre = [], groups = [], sitemaps = [];
+  let cur = null, inAgents = false;
+  for (const raw of text.replace(/\r/g, '').split('\n')){
+    const t = raw.trim();
+    if (t === GEN_MARK || t.startsWith('# All listed AI crawlers follow')) continue;
+    const m = t.match(/^([A-Za-z-]+)\s*:\s*(.*)$/);
+    const key = m ? m[1].toLowerCase() : '';
+    if (key === 'sitemap'){ sitemaps.push(t); continue; }
+    if (key === 'user-agent'){
+      if (!cur || !inAgents){ cur = {agents: [], rules: []}; groups.push(cur); }
+      cur.agents.push(m[2].split('#')[0].trim()); inAgents = true; continue;
+    }
+    if (!cur){ if (t || pre.length) pre.push(raw); continue; }
+    if (t) inAgents = false;
+    cur.rules.push(raw);
+  }
+  const trim = arr => { const a = arr.slice(); while (a.length && !a[a.length - 1].trim()) a.pop(); return a; };
+  const kept = groups.map(g => ({agents: g.agents.filter(a => !ai.has(a.toLowerCase())), rules: trim(g.rules)})).filter(g => g.agents.length);
+  const star = kept.find(g => g.agents.includes('*'));
+  const starBlocksAll = !!star && star.rules.some(r => /^\s*disallow\s*:\s*\/\s*$/i.test(r));
+  const blocked = choices.filter(c => c.block).map(c => c.token);
+  const allowed = choices.filter(c => !c.block).map(c => c.token);
+  const out = [];
+  const p = trim(pre); if (p.length) out.push(...p, '');
+  if (!kept.length) out.push('User-agent: *', 'Disallow:', '');
+  kept.forEach(g => out.push(...g.agents.map(a => `User-agent: ${a}`), ...g.rules, ''));
+  out.push(GEN_MARK);
+  if (blocked.length) out.push(...blocked.map(t => `User-agent: ${t}`), 'Disallow: /', '');
+  if (allowed.length && starBlocksAll) out.push(...allowed.map(t => `User-agent: ${t}`), 'Allow: /', '');
+  if (!blocked.length && !(allowed.length && starBlocksAll)) out.push('# All listed AI crawlers follow the rules for all crawlers above.', '');
+  out.push(...sitemaps);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+function renderRobots(){ $('#robotsOut').textContent = buildRobots(); }
+
+/* ---------------------------------------------------------------- llms.txt */
+let LLMS = null;
+$('#llmsBtn').onclick = runLlms;
+$('#llmsGenBtn').onclick = runLlmsGen;
+$('#llmsUrl').addEventListener('keydown', e => { if (e.key === 'Enter') runLlms(); });
+$('#llmsCopy').onclick = () => navigator.clipboard.writeText($('#llmsText').value).then(() => {
+  $('#llmsCopy').textContent = 'Copied'; setTimeout(() => $('#llmsCopy').textContent = 'Copy', 1500); });
+$('#llmsDownload').onclick = () => {
+  const blob = new Blob([$('#llmsText').value], {type: 'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'llms.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+async function runLlms(){
+  const url = $('#llmsUrl').value.trim();
+  if (!url){ $('#llmsStatus').textContent = 'Enter a site URL.'; return; }
+  store('abvc_llms_url', url);
+  $('#llmsBtn').disabled = true;
+  $('#llmsStatus').textContent = 'Looking for llms.txt and checking its links…';
+  try{
+    const d = await post('/api/llms', {url});
+    if (d.error){ $('#llmsStatus').textContent = d.error; return; }
+    LLMS = d; renderLlms();
+    $('#llmsStatus').textContent = `Checked ${d.origin} at ${d.checked_at}.`;
+  }catch(e){ $('#llmsStatus').textContent = 'Check failed: ' + e.message; }
+  finally{ $('#llmsBtn').disabled = false; }
+}
+function renderLlms(){
+  const d = LLMS;
+  $('#llmsResults').classList.remove('hidden');
+  $('#llmsFiles').innerHTML = d.files.map(f => `<div class="filerow"><strong>/${esc(f.name)}</strong>
+    ${f.exists
+      ? `<span class="chip ok">Found</span><span class="note">${(f.bytes / 1024).toFixed(1)} KB, ${esc(f.content_type || 'no content type')}</span><a class="links" href="${esc(f.url)}" target="_blank" rel="noopener">Open</a>`
+      : `<span class="chip ${f.name === 'llms.txt' ? 'warn' : 'na'}">Not found</span><span class="note">${esc(f.note || f.error || 'HTTP ' + f.status)}</span>`}
+    </div>`).join('');
+  $('#llmsIssues').innerHTML = d.issues.length
+    ? d.issues.map(i => `<li><span class="chip ${LEVEL[i.level][0]}">${LEVEL[i.level][1]}</span><span>${esc(i.msg)}</span></li>`).join('')
+    : '<li><span class="chip ok">OK</span><span>No problems found.</span></li>';
+  if (d.links.length){
+    $('#llmsLinks').innerHTML = `<div class="subhead">Links (${d.links.length} in ${plural(d.sections.length, 'section')})</div><div class="tablewrap"><table><thead><tr><th>Section</th><th>Link</th><th>Description</th><th>Status</th></tr></thead><tbody>${
+      d.links.map(l => `<tr><td>${esc(l.section) || '–'}</td>
+        <td><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title)}</a><span class="sub">${esc(l.url)}</span></td>
+        <td>${esc(l.notes) || '–'}</td>
+        <td>${l.status === undefined && !l.error ? '<span class="chip na">not checked</span>' : l.error || (l.status || 0) >= 400 ? `<span class="chip bad" title="${esc(l.error || '')}">${l.status || 'Failed'}</span>` : `<span class="chip ok">${l.status}</span>`}</td></tr>`).join('')}</tbody></table></div>`;
+  } else $('#llmsLinks').innerHTML = '';
+}
+async function runLlmsGen(){
+  const url = $('#llmsUrl').value.trim();
+  if (!url){ $('#llmsStatus').textContent = 'Enter a site URL.'; return; }
+  store('abvc_llms_url', url);
+  $('#llmsGenBtn').disabled = true;
+  $('#llmsStatus').textContent = 'Reading the sitemap and up to 40 pages. This can take a minute…';
+  try{
+    const d = await post('/api/llms/generate', {url});
+    if (d.error){ $('#llmsStatus').textContent = d.error; return; }
+    $('#llmsDraft').classList.remove('hidden');
+    $('#llmsText').value = d.markdown;
+    $('#llmsDraftNote').textContent = `Built from ${plural(d.pages, 'page')} found through ${d.source === 'links' ? 'links on the homepage' : 'the sitemap'}, using each page's title and meta description. Pages marked noindex and category or tag pages are left out; blog posts go under “Optional”. Review it before publishing.`;
+    $('#llmsStatus').textContent = 'Draft ready below.';
+    $('#llmsDraft').scrollIntoView({behavior: 'smooth', block: 'start'});
+  }catch(e){ $('#llmsStatus').textContent = 'Could not draft the file: ' + e.message; }
+  finally{ $('#llmsGenBtn').disabled = false; }
+}
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -545,6 +709,9 @@ async function init(){
   loadScanHistory();
   const sid = load('abvc_scan');
   if (sid) pollScan(sid);
+  const lastUrl = load('abvc_url') || load('abvc_scan_url') || '';
+  $('#accessUrl').value = load('abvc_access_url') || lastUrl;
+  $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
   $('#signout').classList.toggle('hidden', !s.auth);
   applySettings(s);
 }
