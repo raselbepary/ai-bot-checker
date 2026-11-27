@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Bot View Checker
+Clay Visibility Studio
 -------------------
 See any page the way AI crawlers fetch it (raw HTML, no JavaScript), then ask
 several AI models through OpenRouter what they understand from that view.
@@ -2052,6 +2052,82 @@ def load_compare(cid):
         return None
 
 
+# ---------------------------------------------------------------- brand logos
+BRAND_VARIANTS = ("light", "dark")
+BRAND_MAX = 1024 * 1024
+_BRAND_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+
+
+def _brand_dir():
+    return os.path.join(DATA_DIR, "brand")
+
+
+def _image_ext(data):
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def brand_logo(variant):
+    if variant not in BRAND_VARIANTS:
+        return None, None
+    for ext, mime in _BRAND_TYPES.items():
+        p = os.path.join(_brand_dir(), f"logo-{variant}.{ext}")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return f.read(), mime
+    return None, None
+
+
+def logo_data_uri(variant="light"):
+    data, mime = brand_logo(variant)
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}" if data else ""
+
+
+def _remove_logo_files(variant):
+    for ext in _BRAND_TYPES:
+        try:
+            os.remove(os.path.join(_brand_dir(), f"logo-{variant}.{ext}"))
+        except OSError:
+            pass
+
+
+def save_brand_logo(handler, variant):
+    if variant not in BRAND_VARIANTS:
+        return {"error": "Unknown logo type."}, 400
+    if not storage_writable():
+        return {"error": f"The server cannot write to {DATA_DIR}."}, 500
+    try:
+        length = int(handler.headers.get("Content-Length", 0))
+    except ValueError:
+        length = 0
+    if length <= 0:
+        return {"error": "The file is empty."}, 400
+    if length > BRAND_MAX:
+        return {"error": "The logo must be 1 MB or smaller."}, 413
+    data = handler.rfile.read(length)
+    ext = _image_ext(data)
+    if not ext:
+        return {"error": "Use a PNG, JPEG or WebP image."}, 400
+    os.makedirs(_brand_dir(), exist_ok=True)
+    _remove_logo_files(variant)
+    with open(os.path.join(_brand_dir(), f"logo-{variant}.{ext}"), "wb") as f:
+        f.write(data)
+    save_settings({"brand_v": int(time.time())})
+    return settings_public(), 200
+
+
+def delete_brand_logo(variant):
+    if variant in BRAND_VARIANTS:
+        _remove_logo_files(variant)
+        save_settings({"brand_v": int(time.time())})
+    return settings_public(), 200
+
+
 # ---------------------------------------------------------------- client reports
 REPORT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{24,64}$")
 SCAN_LABELS = {"fetch": "Page could not be fetched", "blocked": "Bot challenge page instead of content", "http": "HTTP error",
@@ -2065,7 +2141,7 @@ CMP_ROWS = [("access", "AI crawlers allowed (of 5 main AI bots)"), ("score", "AI
             ("schemaErr", "Structured data errors"), ("counters", "Animated counters"), ("dated", "Shows a publish or update date"),
             ("llms", "llms.txt"), ("sitemap", "Sitemap listed in robots.txt")]
 REPORT_CSS = """
-:root{--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--soft:#f3f5f4;--accent:#0b7a6e;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
+:root{--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--soft:#f3f5f4;--accent:#c2410c;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
 *{box-sizing:border-box}
 body{margin:0;background:#e9edec;color:var(--ink);font:14px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .bar{position:sticky;top:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#13202b}
@@ -2095,6 +2171,7 @@ td.best{background:var(--ok-bg)} td.worst{background:var(--bad-bg)}
 .tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--na);color:var(--muted)}
 .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.warn{background:var(--warn-bg);color:var(--warn)}
 .url{word-break:break-all}
+.brandlogo{display:block;height:24px;width:auto;margin:0 0 12px}
 footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
 @page{size:A4;margin:14mm}
 @media print{body{background:#fff}.bar{display:none}.doc{margin:0;padding:0;max-width:none;border-radius:0}h2{margin-top:26px}}
@@ -2319,7 +2396,7 @@ def render_report(proj, agency, contact, notes, access, ready, scan, cite, cmpj,
 <style>{REPORT_CSS}</style></head><body>
 <div class="bar"><a href="__PDF__">Download PDF</a></div>
 <div class="doc">
-<header class="cover"><div class="agency">{by}</div><h1>AI visibility report</h1>
+<header class="cover">{(lambda u: f'<img class="brandlogo" src="{u}" alt="{_he(agency)}">' if u else '')(logo_data_uri("light"))}<div class="agency">{by}</div><h1>AI visibility report</h1>
 <div class="client">{_he(proj['name'])}</div><div class="meta">{_he(proj['site'])} · {_he(created_label)}</div></header>
 {f'<div class="notes">{notes_html}</div>' if notes_html else ''}
 <h2 style="margin-top:8px">At a glance</h2><div class="tiles">{''.join(tiles)}</div>
@@ -2682,14 +2759,15 @@ def _monitor_email(proj, run, app_url):
         lines += ["", f"Open the tool: {app_url.rstrip('/')}/#/monitor"]
     li = lambda xs, color: "".join(f'<li style="margin:4px 0;color:{color}">{_he(x)}</li>' for x in xs)
     html_body = (f'<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:14px;color:#18212b;max-width:620px">'
-                 f'<h2 style="font-size:18px;margin:0 0 4px">{_he(proj["name"])}</h2>'
+                 + (f'<img src="{_he(app_url.rstrip("/"))}/brand/logo-light" alt="" style="height:20px;width:auto;margin:0 0 14px">' if app_url and brand_logo("light")[0] else "")
+                 + f'<h2 style="font-size:18px;margin:0 0 4px">{_he(proj["name"])}</h2>'
                  f'<div style="color:#5e6b78;margin-bottom:14px">{_he(proj["site"])} · checked {_he(run["at"])}</div>'
                  + (f'<h3 style="font-size:15px;margin:12px 0 4px">What got worse</h3><ul>{li(worse, "#b4261e")}</ul>' if worse else "")
                  + (f'<h3 style="font-size:15px;margin:12px 0 4px">What improved</h3><ul>{li(better, "#17744a")}</ul>' if better else "")
                  + ("" if worse or better else f'<p>{_he(run["changes"][0]["text"] if run["changes"] else "No changes.")}</p>')
                  + (f'<h3 style="font-size:15px;margin:12px 0 4px">Notes</h3><ul>{li(run["errors"], "#5e6b78")}</ul>' if run["errors"] else "")
                  + (f'<p style="color:#5e6b78">Current state: {_he(run["summary"])}.</p>' if run["summary"] else "")
-                 + (f'<p><a href="{_he(app_url.rstrip("/"))}/#/monitor" style="color:#0b7a6e">Open the tool</a></p>' if app_url else "")
+                 + (f'<p><a href="{_he(app_url.rstrip("/"))}/#/monitor" style="color:#c2410c">Open the tool</a></p>' if app_url else "")
                  + "</div>")
     return subject, "\n".join(lines), html_body
 
@@ -3091,9 +3169,9 @@ def render_portal(proj, viewer, preview=False):
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
 <style>{PORTAL_CSS}</style></head><body>
 {'<div class="preview">Preview: this is what the client sees.</div>' if preview else ''}
-<div class="top"><span><strong>{_he(agency or 'AI visibility')}</strong></span><span>{_he(viewer)}{'' if preview else ' · <a href="/portal/logout">Sign out</a>'}</span></div>
+<div class="top"><span>{(f'<img src="/brand/logo-dark?v={st.get("brand_v", 0)}" alt="{_he(agency)}" style="height:20px;width:auto;vertical-align:middle">' if brand_logo("dark")[0] else f'<strong>{_he(agency or "AI visibility")}</strong>')}</span><span>{_he(viewer)}{'' if preview else ' · <a href="/portal/logout">Sign out</a>'}</span></div>
 <div class="doc">
-<header class="cover"><div class="agency">{by}</div><h1>AI visibility</h1>
+<header class="cover">{(lambda u: f'<img class="brandlogo" src="{u}" alt="{_he(agency)}">' if u else '')(logo_data_uri("light"))}<div class="agency">{by}</div><h1>AI visibility</h1>
 <div class="client">{_he(proj['name'])}</div><div class="meta">{_he(proj['site'])}</div></header>
 <h2 style="margin-top:8px">At a glance</h2><div class="tiles">{''.join(tiles)}</div>
 {trend}
@@ -3169,7 +3247,7 @@ def ask_search(key, model, prompt, engine, location):
                "tools": [{"type": "openrouter:web_search", "parameters": params}]}
     req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(payload).encode(), headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost", "X-Title": "AI Bot View Checker"})
+        "HTTP-Referer": "http://localhost", "X-Title": "Clay Visibility Studio"})
     t0 = time.time()
     try:
         try:
@@ -3385,7 +3463,7 @@ def or_chat(key, model, system, user, temperature=0.3, timeout=120):
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     req = urllib.request.Request(OPENROUTER_URL, data=json.dumps(payload).encode(), headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost", "X-Title": "AI Bot View Checker"})
+        "HTTP-Referer": "http://localhost", "X-Title": "Clay Visibility Studio"})
     try:
         try:
             resp = urllib.request.urlopen(req, timeout=timeout)
@@ -3866,7 +3944,8 @@ def settings_public():
     return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
             "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD),
             "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", ""),
-            "smtp": smtp_public()}
+            "smtp": smtp_public(),
+            "logo": {"light": bool(brand_logo("light")[0]), "dark": bool(brand_logo("dark")[0]), "v": s.get("brand_v", 0)}}
 
 
 # ---------------------------------------------------------------- sessions
@@ -3953,7 +4032,7 @@ def ask_model(key, model, bot_label, url, text, question, mode="text", engine="o
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost",
-        "X-Title": "AI Bot View Checker",
+        "X-Title": "Clay Visibility Studio",
     })
     t0 = time.time()
     try:
@@ -4083,6 +4162,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, data, "application/pdf", hdrs)
             with open(src, encoding="utf-8") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8", hdrs)
+        if path in ("/brand/logo-light", "/brand/logo-dark"):
+            data, mime = brand_logo(path.rsplit("-", 1)[1])
+            if not data:
+                return self._send(404, "No logo", "text/plain; charset=utf-8")
+            return self._send(200, data, mime)
         if path in ("/portal", "/portal/"):
             hdrs = {"X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "same-origin"}
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -4156,6 +4240,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/brand/logo/"):
+            if not self._authorized():
+                return self._deny()
+            body, code = save_brand_logo(self, path.rsplit("/", 1)[1])
+            return self._json(body, code)
         if path == "/api/logs/analyze":
             if not self._authorized():
                 return self._deny()
@@ -4218,6 +4307,9 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/brand/logo-delete":
+                body, code = delete_brand_logo(str(payload.get("variant", "")))
+                return self._json(body, code)
             if path == "/api/portal/users/add":
                 body, code = add_portal_user(payload)
                 return self._json(body, code)
@@ -4242,7 +4334,7 @@ class Handler(BaseHTTPRequestHandler):
                 to = parse_emails(payload.get("to"))
                 if not to:
                     return self._json({"error": "Enter a valid email address."}, 400)
-                err = send_email(to, "Test email from AI Bot View Checker",
+                err = send_email(to, "Test email from Clay Visibility Studio",
                                  "This is a test. Monitoring alerts will arrive like this.",
                                  "<p>This is a test. Monitoring alerts will arrive like this.</p>")
                 return self._json({"error": err} if err else {"ok": True, "to": to}, 502 if err else 200)
@@ -4357,7 +4449,7 @@ def main():
     if storage_writable():
         threading.Thread(target=_monitor_loop, daemon=True).start()
     url = f"http://localhost:{PORT}"
-    print(f"\n  AI Bot View Checker listening on {HOST}:{PORT}", flush=True)
+    print(f"\n  Clay Visibility Studio listening on {HOST}:{PORT}", flush=True)
     print(f"  Login: {'on (user ' + APP_USERNAME + ')' if APP_PASSWORD else 'off'}", flush=True)
     print(f"  Settings folder: {DATA_DIR} ({'writable' if storage_writable() else 'NOT writable'})", flush=True)
     print(f"  Private URLs: {'allowed' if ALLOW_PRIVATE else 'blocked'}", flush=True)
