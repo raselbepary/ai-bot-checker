@@ -2141,15 +2141,15 @@ CMP_ROWS = [("access", "AI crawlers allowed (of 5 main AI bots)"), ("score", "AI
             ("schemaErr", "Structured data errors"), ("counters", "Animated counters"), ("dated", "Shows a publish or update date"),
             ("llms", "llms.txt"), ("sitemap", "Sitemap listed in robots.txt")]
 REPORT_CSS = """
-:root{--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--soft:#f3f5f4;--accent:#c2410c;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
+:root{--ink:#18181b;--muted:#71717a;--line:#e4e4e7;--soft:#f4f4f5;--accent:#c2410c;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
 *{box-sizing:border-box}
-body{margin:0;background:#e9edec;color:var(--ink);font:14px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-.bar{position:sticky;top:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#13202b}
+body{margin:0;background:#f4f4f5;color:var(--ink);font:14px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.bar{position:sticky;top:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#18181b}
 .bar a{color:#fff;background:var(--accent);text-decoration:none;font-weight:600;padding:7px 14px;border-radius:7px;font-size:14px}
-.doc{max-width:900px;margin:24px auto;background:#fff;padding:44px 52px;border-radius:10px}
+.doc{max-width:900px;margin:24px auto;background:#fff;padding:44px 52px;border-radius:16px;border:1px solid var(--line)}
 header.cover{border-bottom:2px solid var(--ink);padding-bottom:22px;margin-bottom:26px}
 .agency{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.01em}
-h1{font-size:30px;line-height:1.15;margin:14px 0 6px;letter-spacing:-.02em}
+h1{font:800 32px/1.12 "Archivo","Instrument Sans",sans-serif;font-stretch:115%;margin:14px 0 6px;letter-spacing:-.01em}
 .client{font-size:18px;font-weight:600}
 .meta{color:var(--muted);font-size:13.5px;margin-top:4px}
 h2{font-size:19px;margin:34px 0 8px;letter-spacing:-.01em;break-after:avoid}
@@ -2160,7 +2160,7 @@ p{margin:6px 0}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}
 .tile{border:1px solid var(--line);border-radius:9px;padding:12px 14px;break-inside:avoid;border-top-width:4px}
 .tile.ok{border-top-color:var(--ok)} .tile.warn{border-top-color:#d69e2e} .tile.bad{border-top-color:var(--bad)} .tile.na{border-top-color:var(--line)}
-.tl{font-size:12px;color:var(--muted);font-weight:600} .tv{font-size:22px;font-weight:700;margin:2px 0;letter-spacing:-.01em} .ts{font-size:12px;color:var(--muted)}
+.tl{font-size:12px;color:var(--muted);font-weight:600} .tv{font:800 22px/1.25 "Archivo","Instrument Sans",sans-serif;font-stretch:110%;margin:2px 0} .ts{font-size:12px;color:var(--muted)}
 ol.find{padding-left:20px;margin:8px 0} ol.find li{margin:0 0 9px;break-inside:avoid} ol.find .muted{display:block}
 table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 4px}
 th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -2171,6 +2171,7 @@ td.best{background:var(--ok-bg)} td.worst{background:var(--bad-bg)}
 .tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--na);color:var(--muted)}
 .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.warn{background:var(--warn-bg);color:var(--warn)}
 .url{word-break:break-all}
+a{color:var(--accent)}
 .brandlogo{display:block;height:24px;width:auto;margin:0 0 12px}
 footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
 @page{size:A4;margin:14mm}
@@ -2392,7 +2393,7 @@ def render_report(proj, agency, contact, notes, access, ready, scan, cite, cmpj,
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow"><title>AI visibility report: {_he(proj['name'])}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..800&family=Instrument+Sans:wght@400..700&display=swap">
 <style>{REPORT_CSS}</style></head><body>
 <div class="bar"><a href="__PDF__">Download PDF</a></div>
 <div class="doc">
@@ -2914,7 +2915,7 @@ PORTAL_COOKIE = "abvc_portal"
 PORTAL_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 _PORTAL_LOCK = threading.Lock()
 PORTAL_CSS = REPORT_CSS + """
-.top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 22px;background:#13202b;color:#e8eef2;font-size:14px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 22px;background:#18181b;color:#f4f4f5;font-size:14px}
 .top a{color:#e8eef2}
 .top strong{font-weight:650}
 .trend{display:flex;align-items:flex-end;gap:8px;height:120px;border-bottom:1px solid var(--line);margin-top:12px}
@@ -3166,7 +3167,7 @@ def render_portal(proj, viewer, preview=False):
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow"><title>{_he(proj['name'])}: AI visibility</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..800&family=Instrument+Sans:wght@400..700&display=swap">
 <style>{PORTAL_CSS}</style></head><body>
 {'<div class="preview">Preview: this is what the client sees.</div>' if preview else ''}
 <div class="top"><span>{(f'<img src="/brand/logo-dark?v={st.get("brand_v", 0)}" alt="{_he(agency)}" style="height:20px;width:auto;vertical-align:middle">' if brand_logo("dark")[0] else f'<strong>{_he(agency or "AI visibility")}</strong>')}</span><span>{_he(viewer)}{'' if preview else ' · <a href="/portal/logout">Sign out</a>'}</span></div>
