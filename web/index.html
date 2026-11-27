@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Bot View Checker</title>
+<title>Clay Visibility Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap">
@@ -12,7 +12,7 @@
 <body>
 <div class="shell">
   <aside class="nav">
-    <a class="brand" href="#/projects"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></span><span>AI Bot View Checker</span></a>
+    <a class="brand" href="#/projects"><img id="brandLogo" src="/brand/logo-dark" alt="The Clay Media" onload="this.parentNode.classList.add('has-logo')" onerror="this.remove()"><span class="appname"><span class="co">Clay </span>Visibility Studio</span></a>
     <div class="projpick">
       <label for="projectSel">Client</label>
       <select id="projectSel"><option value="">No project</option></select>
@@ -398,7 +398,7 @@
         </section>
         <section class="panel">
           <h2>Visits per day</h2>
-          <div class="note" style="margin:2px 0 10px">Real and unverifiable visits in blue, fake bots in red.</div>
+          <div class="note" style="margin:2px 0 10px">Real and unverifiable visits in green, fake bots in red.</div>
           <div class="daybars" id="logDays"></div>
         </section>
         <section class="panel">
@@ -702,12 +702,25 @@
       </section>
       <section class="panel">
         <h2>Report branding</h2>
-        <p class="hint">Shown at the top of client reports.</p>
+        <p class="hint">Shown on client reports, the client portal and alert emails.</p>
         <div class="grid2">
           <div><label class="fld" for="agencyName">Agency name</label><input id="agencyName" type="text" placeholder="Clay Media Solutions"></div>
           <div><label class="fld" for="agencyContact">Contact line</label><input id="agencyContact" type="text" placeholder="theclaymediasolutions.com · hello@example.com"></div>
         </div>
         <div class="row" style="margin-top:12px"><button id="saveBrand">Save branding</button><span class="note" style="margin:0" id="brandNote"></span></div>
+        <div class="grid2" style="margin-top:18px">
+          <div>
+            <div class="fld">Logo for light backgrounds <span class="note" style="margin:0;font-weight:400">reports, PDFs, emails</span></div>
+            <div class="logoprev light" id="lpLight"></div>
+            <div class="row"><input type="file" id="logoLight" accept="image/png,image/jpeg,image/webp" aria-label="Logo for light backgrounds" style="flex:1;min-width:200px"><a class="links" style="margin:0" id="rmLight">Remove</a></div>
+          </div>
+          <div>
+            <div class="fld">Logo for dark backgrounds <span class="note" style="margin:0;font-weight:400">sidebar, sign-in pages, client portal</span></div>
+            <div class="logoprev dark" id="lpDark"></div>
+            <div class="row"><input type="file" id="logoDark" accept="image/png,image/jpeg,image/webp" aria-label="Logo for dark backgrounds" style="flex:1;min-width:200px"><a class="links" style="margin:0" id="rmDark">Remove</a></div>
+          </div>
+        </div>
+        <div class="note" id="logoNote">PNG with a transparent background works best, up to 1 MB.</div>
       </section>
     </div>
   </main>
