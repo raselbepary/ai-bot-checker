@@ -1619,6 +1619,7 @@ async function renderReportsPage(){
     item(true, 'Competitor comparison', 'The latest comparison for this client, if there is one.');
   $('#repBrandNote').innerHTML = SETTINGS.agency_name ? `Branded as ${esc(SETTINGS.agency_name)}.` : 'Add your agency name in <a class="links" href="#/settings">Settings</a> to brand reports.';
   loadReports();
+  loadPortalUsers();
 }
 
 async function loadReports(){
@@ -1779,6 +1780,58 @@ $('#testSmtp').onclick = async () => {
   }catch(e){ $('#smtpNote').textContent = 'Could not send: ' + e.message; }
   finally{ $('#testSmtp').disabled = false; }
 };
+
+/* ---------------------------------------------------------------- client portal (agency side) */
+async function loadPortalUsers(){
+  const p = activeProject(); if (!p) return;
+  $('#portalUrl').textContent = location.origin + '/portal';
+  $('#portalPreview').href = '/portal?preview=' + encodeURIComponent(p.id);
+  try{
+    const d = await api('/api/portal/users?project=' + encodeURIComponent(p.id));
+    const rows = d.users || [];
+    $('#portalUsers').innerHTML = rows.length ? `<thead><tr><th>Name</th><th>Email</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(u => `<tr>
+      <td><strong>${esc(u.name)}</strong></td><td>${esc(u.email)}</td><td class="num">${esc(u.last_login ? u.last_login.slice(0, 16) : 'Never')}</td>
+      <td>${u.disabled ? '<span class="chip na">Disabled</span>' : '<span class="chip ok">Active</span>'}</td>
+      <td><div class="row" style="gap:12px">
+        <a class="links" style="margin:0" data-pureset="${esc(u.id)}" data-email="${esc(u.email)}">New password</a>
+        <a class="links" style="margin:0" data-pudis="${esc(u.id)}" data-v="${u.disabled ? '0' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</a>
+        <a class="links" style="margin:0;color:var(--bad)" data-pudel="${esc(u.id)}">Delete</a></div></td></tr>`).join('')}</tbody>`
+      : '<tbody><tr><td class="note">No client logins yet.</td></tr></tbody>';
+    $$('[data-pureset]').forEach(a => a.onclick = async () => {
+      if (!confirm(`Create a new password for ${a.dataset.email}? The old one stops working and they are signed out.`)) return;
+      const r = await post('/api/portal/users/reset', {id: a.dataset.pureset});
+      if (r.error){ $('#puStatus').textContent = r.error; return; }
+      showPortalPassword(r.user.email, r.password); loadPortalUsers();
+    });
+    $$('[data-pudis]').forEach(a => a.onclick = async () => {
+      await post('/api/portal/users/disable', {id: a.dataset.pudis, disabled: a.dataset.v === '1'});
+      loadPortalUsers();
+    });
+    $$('[data-pudel]').forEach(a => a.onclick = async () => {
+      if (!confirm('Delete this client login?')) return;
+      await post('/api/portal/users/delete', {id: a.dataset.pudel});
+      loadPortalUsers();
+    });
+  }catch(e){}
+}
+function showPortalPassword(email, pw){
+  $('#puStatus').innerHTML = `Password for ${esc(email)}: <code id="puPw">${esc(pw)}</code> <a class="links" id="puPwCopy">Copy</a><br>
+    <span class="note" style="margin:0">Send it to the client privately, with the portal address. It won't be shown again; use “New password” if it's lost.</span>`;
+  $('#puPwCopy').onclick = () => navigator.clipboard.writeText(pw).then(() => { $('#puPwCopy').textContent = 'Copied'; });
+}
+$('#puAdd').onclick = async () => {
+  const p = activeProject(); if (!p) return;
+  $('#puAdd').disabled = true;
+  try{
+    const r = await post('/api/portal/users/add', {project_id: p.id, name: $('#puName').value, email: $('#puEmail').value});
+    if (r.error){ $('#puStatus').textContent = r.error; return; }
+    $('#puName').value = ''; $('#puEmail').value = '';
+    showPortalPassword(r.user.email, r.password);
+    loadPortalUsers();
+  }catch(e){ $('#puStatus').textContent = 'Could not add the login: ' + e.message; }
+  finally{ $('#puAdd').disabled = false; }
+};
+$('#portalCopy').onclick = () => navigator.clipboard.writeText($('#portalUrl').textContent).then(() => { $('#portalCopy').textContent = 'Copied'; });
 
 /* ---------------------------------------------------------------- start */
 async function init(){
