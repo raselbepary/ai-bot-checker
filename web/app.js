@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', compare: 'Competitors', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', reports: 'Reports', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', compare: 'Competitors', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,9 +33,10 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap', 'compare'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap', 'compare', 'reports'].includes(p));
   const head = $('#page-' + p + ' .pagehead');
   if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
+  if (p === 'reports') renderReportsPage();
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -63,6 +64,8 @@ function applySettings(s){
   $('#models').value = currentModels().join('\n');
   renderModelPicks();
   renderCiteModels();
+  if (document.activeElement !== $('#agencyName')) $('#agencyName').value = s.agency_name || '';
+  if (document.activeElement !== $('#agencyContact')) $('#agencyContact').value = s.agency_contact || '';
 }
 function renderModelPicks(){
   $('#modelPick').innerHTML = currentModels().map((m, i) =>
@@ -917,6 +920,7 @@ function renderCtx(){
   el.innerHTML = p
     ? `<span class="ctx-dot" aria-hidden="true"></span><span>Working on <strong>${esc(p.name)}</strong></span><span class="ctx-site">${esc(hostOf(p.site) || p.site)}</span><a class="links" href="#/projects">Change</a>`
     : `<span>No client selected.</span><a class="links" href="#/projects">Choose a project</a>`;
+  if (location.hash === '#/reports') renderReportsPage();
 }
 
 /* ---------------------------------------------------------------- per-client results */
@@ -1587,6 +1591,74 @@ async function loadCmpHistory(){
       `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.host)}, ${esc((s.checked_at || '').slice(0, 16))}, ${plural(s.count, 'site')}</option>`).join('');
   }catch(e){}
 }
+
+/* ---------------------------------------------------------------- client reports */
+async function renderReportsPage(){
+  if (activeProject()){
+    try{ const d = await api('/api/projects'); if (d.projects) PROJECTS = d.projects; }catch(e){}
+  }
+  const p = activeProject();
+  $('#repEmpty').classList.toggle('hidden', !!p);
+  $('#repMain').classList.toggle('hidden', !p);
+  if (!p) return;
+  $('#repClient').textContent = p.name;
+  const s = p.latest && p.latest.scan, c = p.latest && p.latest.cite;
+  const item = (ok, title, detail) => `<li><span class="chip ${ok ? 'ok' : 'na'}">${ok ? 'Included' : 'Not yet'}</span><span><strong>${esc(title)}</strong><span class="where">${esc(detail)}</span></span></li>`;
+  $('#repIncludes').innerHTML =
+    item(true, 'AI crawler access', 'Checked fresh when the report is created.') +
+    item(true, 'AI readiness of the homepage', 'Checked fresh when the report is created.') +
+    item(!!s, 'Site scan', s ? `Latest scan from ${(s.started_at || '').slice(0, 10)}.` : 'Run a site scan for this client to include it.') +
+    item(!!c, 'Visibility in AI answers', c ? `Latest citation test from ${(c.started_at || '').slice(0, 10)}.` : 'Run an AI citations test to include it.') +
+    item(true, 'Competitor comparison', 'The latest comparison for this client, if there is one.');
+  $('#repBrandNote').innerHTML = SETTINGS.agency_name ? `Branded as ${esc(SETTINGS.agency_name)}.` : 'Add your agency name in <a class="links" href="#/settings">Settings</a> to brand reports.';
+  loadReports();
+}
+
+async function loadReports(){
+  const p = activeProject(); if (!p) return;
+  try{
+    const d = await api('/api/reports?project=' + encodeURIComponent(p.id));
+    const rows = d.reports || [];
+    $('#repList').innerHTML = rows.length ? `<thead><tr><th>Created</th><th>Includes</th><th></th></tr></thead><tbody>${rows.map(r => {
+      const has = r.has || {};
+      const parts = [has.access && 'access', has.readiness && 'readiness', has.scan && 'site scan', has.cite && 'AI answers', has.compare && 'competitors'].filter(Boolean);
+      return `<tr><td class="num">${esc(r.created_at.slice(0, 16))}</td><td>${esc(parts.join(', '))}</td>
+        <td><div class="row" style="gap:12px">
+          <a class="links" style="margin:0" href="/r/${esc(r.id)}" target="_blank" rel="noopener">Open</a>
+          <a class="links" style="margin:0" href="/r/${esc(r.id)}.pdf">Download PDF</a>
+          <a class="links" style="margin:0" data-copylink="${esc(r.id)}">Copy link</a>
+          <a class="links" style="margin:0;color:var(--bad)" data-delrep="${esc(r.id)}">Delete</a></div></td></tr>`;
+    }).join('')}</tbody>` : '<tbody><tr><td class="note">No reports yet for this client.</td></tr></tbody>';
+    $$('[data-copylink]').forEach(a => a.onclick = () => navigator.clipboard.writeText(location.origin + '/r/' + a.dataset.copylink).then(() => { a.textContent = 'Copied'; }));
+    $$('[data-delrep]').forEach(a => a.onclick = async () => {
+      if (!confirm('Delete this report? Its link will stop working.')) return;
+      try{ await post('/api/reports/delete', {id: a.dataset.delrep}); }catch(e){}
+      loadReports();
+    });
+  }catch(e){}
+}
+
+$('#repBtn').onclick = async () => {
+  const p = activeProject(); if (!p) return;
+  $('#repBtn').disabled = true;
+  $('#repStatus').textContent = 'Checking crawler access and the homepage, then building the report…';
+  try{
+    const d = await post('/api/report', {project_id: p.id, notes: $('#repNotes').value});
+    if (d.error){ $('#repStatus').textContent = d.error; return; }
+    $('#repStatus').innerHTML = `Report created. <a class="links" href="/r/${esc(d.id)}" target="_blank" rel="noopener">Open it</a> or <a class="links" href="/r/${esc(d.id)}.pdf">download the PDF</a>.`;
+    loadReports();
+  }catch(e){ $('#repStatus').textContent = 'Could not create the report: ' + e.message; }
+  finally{ $('#repBtn').disabled = false; }
+};
+
+$('#saveBrand').onclick = async () => {
+  try{
+    const s = await post('/api/settings', {agency_name: $('#agencyName').value, agency_contact: $('#agencyContact').value});
+    if (s.error){ $('#brandNote').textContent = s.error; return; }
+    applySettings(s);
+    $('#brandNote').textContent = 'Saved.';
+  }catch(e){ $('#brandNote').textContent = 'Could not save: ' + e.message; }
+};
 
 /* ---------------------------------------------------------------- start */
 async function init(){
