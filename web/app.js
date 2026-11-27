@@ -10,7 +10,7 @@ const QUESTIONS = {
   company: "What does this company do, and what concrete facts (sizes, counts, values, locations) does the page state?",
   missing: "Is any information on this page missing, contradictory, or shown as a placeholder (for example 0 values)? List it."
 };
-const PAGES = {projects: 'Projects', reports: 'Reports', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', compare: 'Competitors', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
+const PAGES = {projects: 'Projects', reports: 'Reports', monitor: 'Monitoring', bots: 'Bot view', jsgap: 'JavaScript gap', scan: 'Site scan', schema: 'Structured data', ready: 'AI readiness', access: 'AI access', logs: 'Crawler visits', llms: 'llms.txt', compare: 'Competitors', ai: 'AI test', cite: 'AI citations', settings: 'Settings'};
 let LAST = null;
 let SETTINGS = {key_source: 'none', key_hint: '', models: [], storage_ok: false, auth: false};
 
@@ -33,10 +33,11 @@ function route(){
   const p = currentPage();
   Object.keys(PAGES).forEach(k => $('#page-' + k).classList.toggle('hidden', k !== p));
   $$('.nav nav a[data-page]').forEach(a => a.dataset.page === p ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
-  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap', 'compare', 'reports'].includes(p));
+  $('#checkbar').classList.toggle('hidden', ['settings', 'scan', 'access', 'llms', 'cite', 'projects', 'logs', 'ready', 'jsgap', 'compare', 'reports', 'monitor'].includes(p));
   const head = $('#page-' + p + ' .pagehead');
   if (head && head.nextElementSibling !== $('#checkbar')) head.after($('#checkbar'));
   if (p === 'reports') renderReportsPage();
+  if (p === 'monitor') renderMonitorPage();
   document.title = `${PAGES[p]} – AI Bot View Checker`;
 }
 window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
@@ -66,6 +67,11 @@ function applySettings(s){
   renderCiteModels();
   if (document.activeElement !== $('#agencyName')) $('#agencyName').value = s.agency_name || '';
   if (document.activeElement !== $('#agencyContact')) $('#agencyContact').value = s.agency_contact || '';
+  const sm = s.smtp || {};
+  [['#smtpHost', sm.host], ['#smtpPort', sm.port], ['#smtpUser', sm.user], ['#smtpFrom', sm.from]]
+    .forEach(([sel, v]) => { if (document.activeElement !== $(sel)) $(sel).value = v || ''; });
+  if (sm.security) $('#smtpSec').value = sm.security;
+  $('#smtpPass').placeholder = sm.password_set ? 'Saved (leave empty to keep it)' : '';
 }
 function renderModelPicks(){
   $('#modelPick').innerHTML = currentModels().map((m, i) =>
@@ -921,6 +927,7 @@ function renderCtx(){
     ? `<span class="ctx-dot" aria-hidden="true"></span><span>Working on <strong>${esc(p.name)}</strong></span><span class="ctx-site">${esc(hostOf(p.site) || p.site)}</span><a class="links" href="#/projects">Change</a>`
     : `<span>No client selected.</span><a class="links" href="#/projects">Choose a project</a>`;
   if (location.hash === '#/reports') renderReportsPage();
+  if (location.hash === '#/monitor') renderMonitorPage();
 }
 
 /* ---------------------------------------------------------------- per-client results */
@@ -1658,6 +1665,119 @@ $('#saveBrand').onclick = async () => {
     applySettings(s);
     $('#brandNote').textContent = 'Saved.';
   }catch(e){ $('#brandNote').textContent = 'Could not save: ' + e.message; }
+};
+
+/* ---------------------------------------------------------------- monitoring */
+let MON = null, monTimer = null;
+function fmtWhen(ts){
+  if (!ts) return '–';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString(undefined, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+}
+async function renderMonitorPage(){
+  clearTimeout(monTimer);
+  try{ MON = await api('/api/monitor'); }catch(e){ return; }
+  const smtp = MON.smtp || {};
+  $('#monSmtp').innerHTML = smtp.ready
+    ? `Alerts are sent from ${esc(smtp.from)} through ${esc(smtp.host)}.`
+    : '<span class="chip warn">Email is not set up</span> Add your mail server in <a class="links" href="#/settings">Settings</a> so alerts can be sent.';
+  $('#monAll').innerHTML = MON.projects.length ? `<thead><tr><th>Client</th><th>Schedule</th><th>Last check</th><th>Next check</th><th>Last result</th></tr></thead><tbody>${
+    MON.projects.map(p => {
+      const m = p.monitor;
+      const res = p.running ? `<span class="chip na">${esc(p.running)}…</span>`
+        : !m.last_summary ? '–' : `<span class="chip ${/problem/.test(m.last_summary) ? 'bad' : m.last_summary === 'First check' ? 'na' : 'ok'}">${esc(m.last_summary)}</span>`;
+      return `<tr><td><strong>${esc(p.name)}</strong><span class="sub">${esc(p.site)}</span></td>
+        <td>${m.enabled ? (m.frequency === 'daily' ? 'Every day' : 'Every week') : '<span class="note" style="margin:0">Off</span>'}</td>
+        <td class="num">${esc(m.last_run ? m.last_run.slice(0, 16) : '–')}</td>
+        <td class="num">${m.enabled ? esc(fmtWhen(m.next_run)) : '–'}</td><td>${res}</td></tr>`;
+    }).join('')}</tbody>` : '<tbody><tr><td class="note">No client projects yet.</td></tr></tbody>';
+  const p = activeProject();
+  $('#monEmpty').classList.toggle('hidden', !!p);
+  $('#monMain').classList.toggle('hidden', !p);
+  if (!p) return;
+  const row = MON.projects.find(x => x.id === p.id);
+  const m = row ? row.monitor : {};
+  $('#monClient').textContent = p.name;
+  if (!$('#monMain').dataset.loaded || $('#monMain').dataset.loaded !== p.id){
+    $('#monEnabled').checked = !!m.enabled;
+    $('#monFreq').value = m.frequency || 'weekly';
+    $('#monScan').checked = m.scan !== false;
+    $('#monLimit').value = String(m.scan_limit || 50);
+    $('#monCite').checked = !!m.cite;
+    $('#monEmails').value = m.emails || '';
+    $('#monNotify').value = m.notify || 'changes';
+    $('#monMain').dataset.loaded = p.id;
+    $('#monStatus').textContent = '';
+  }
+  loadMonRuns(p.id, row && row.running);
+}
+
+async function loadMonRuns(pid, running){
+  try{
+    const d = await api('/api/monitor/runs?project=' + encodeURIComponent(pid));
+    const busy = d.running || running;
+    const kinds = {worse: ['bad', 'Worse'], better: ['ok', 'Better'], same: ['na', 'Same'], info: ['na', 'Note']};
+    $('#monRuns').innerHTML = (busy ? `<div class="status" style="margin:0 0 10px">Checking now: ${esc(busy)}…</div>` : '') + (d.runs.length ? d.runs.map(r => {
+      const nWorse = r.changes.filter(c => c.kind === 'worse').length;
+      const first = r.changes.length && r.changes[0].text.startsWith('First check');
+      return `<details class="bot"${r === d.runs[0] ? ' open' : ''}><summary><span>${esc(r.at.slice(0, 16))}</span>
+        <span class="chip ${nWorse ? 'bad' : first ? 'na' : 'ok'}">${nWorse ? plural(nWorse, 'problem') : first ? 'Starting point' : 'No new problems'}</span>
+        <span class="note" style="margin:0;font-weight:400">${esc(r.summary || '')}</span></summary>
+        <div class="dbody"><ul class="issues">${r.changes.map(c => `<li><span class="chip ${kinds[c.kind][0]}">${kinds[c.kind][1]}</span><span>${esc(c.text)}</span></li>`).join('')}
+        ${r.errors.map(e => `<li><span class="chip warn">Note</span><span>${esc(e)}</span></li>`).join('')}</ul>
+        <div class="note">Took ${r.secs} s. ${r.email ? 'Email: ' + esc(r.email) + '.' : 'No email addresses set.'}</div></div></details>`;
+    }).join('') : (busy ? '' : '<div class="note" style="margin:0">No checks yet. Turn monitoring on, or run a check now.</div>'));
+    if (busy && location.hash === '#/monitor' && activeProject() && activeProject().id === pid) monTimer = setTimeout(renderMonitorPage, 5000);
+  }catch(e){}
+}
+
+$('#monSave').onclick = async () => {
+  const p = activeProject(); if (!p) return;
+  $('#monSave').disabled = true;
+  try{
+    const d = await post('/api/monitor/save', {project_id: p.id, enabled: $('#monEnabled').checked, frequency: $('#monFreq').value,
+      scan: $('#monScan').checked, scan_limit: Number($('#monLimit').value), cite: $('#monCite').checked,
+      emails: $('#monEmails').value, notify: $('#monNotify').value});
+    if (d.error){ $('#monStatus').textContent = d.error; return; }
+    $('#monStatus').textContent = d.monitor.enabled
+      ? `Saved. The first check starts within a few minutes, then ${d.monitor.frequency === 'daily' ? 'every day' : 'every week'}.` + (d.smtp_ready ? '' : ' Email is not set up yet, so alerts cannot be sent until you add it in Settings.')
+      : 'Saved. Automatic checks are off for this client.';
+    renderMonitorPage();
+  }catch(e){ $('#monStatus').textContent = 'Could not save: ' + e.message; }
+  finally{ $('#monSave').disabled = false; }
+};
+$('#monRun').onclick = async () => {
+  const p = activeProject(); if (!p) return;
+  try{
+    const d = await post('/api/monitor/run', {project_id: p.id});
+    if (d.error){ $('#monStatus').textContent = d.error; return; }
+    $('#monStatus').textContent = 'Check started. Results appear below when it finishes; a site scan can take a few minutes.';
+    setTimeout(renderMonitorPage, 800);
+  }catch(e){ $('#monStatus').textContent = 'Could not start: ' + e.message; }
+};
+
+function smtpPayload(){
+  return {host: $('#smtpHost').value, port: $('#smtpPort').value, security: $('#smtpSec').value, user: $('#smtpUser').value,
+          from: $('#smtpFrom').value, password: $('#smtpPass').value};
+}
+$('#saveSmtp').onclick = async () => {
+  try{
+    const s = await post('/api/settings', {smtp: smtpPayload()});
+    if (s.error){ $('#smtpNote').textContent = s.error; return; }
+    $('#smtpPass').value = ''; applySettings(s);
+    $('#smtpNote').textContent = 'Saved.';
+  }catch(e){ $('#smtpNote').textContent = 'Could not save: ' + e.message; }
+};
+$('#testSmtp').onclick = async () => {
+  $('#testSmtp').disabled = true;
+  $('#smtpNote').textContent = 'Saving and sending…';
+  try{
+    const s = await post('/api/settings', {smtp: smtpPayload()});
+    if (!s.error){ $('#smtpPass').value = ''; applySettings(s); }
+    const d = await post('/api/email/test', {to: $('#smtpTestTo').value});
+    $('#smtpNote').textContent = d.error ? d.error : `Test email sent to ${d.to.join(', ')}. Check the inbox (and the spam folder).`;
+  }catch(e){ $('#smtpNote').textContent = 'Could not send: ' + e.message; }
+  finally{ $('#testSmtp').disabled = false; }
 };
 
 /* ---------------------------------------------------------------- start */
