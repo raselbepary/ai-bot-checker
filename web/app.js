@@ -1611,6 +1611,9 @@ async function loadCmpHistory(){
 }
 
 /* ---------------------------------------------------------------- client reports */
+const REP_LABELS = [['access', 'AI crawler access'], ['readiness', 'AI readiness'], ['scan', 'Site scan'],
+  ['cite', 'Visibility in AI answers'], ['compare', 'Competitors'], ['monitor', 'Monitoring history']];
+let REP_SECS = REP_LABELS.map(x => x[0]);
 async function renderReportsPage(){
   if (activeProject()){
     try{ const d = await api('/api/projects'); if (d.projects) PROJECTS = d.projects; }catch(e){}
@@ -1620,14 +1623,29 @@ async function renderReportsPage(){
   $('#repMain').classList.toggle('hidden', !p);
   if (!p) return;
   $('#repClient').textContent = p.name;
-  const s = p.latest && p.latest.scan, c = p.latest && p.latest.cite;
-  const item = (ok, title, detail) => `<li><span class="chip ${ok ? 'ok' : 'na'}">${ok ? 'Included' : 'Not yet'}</span><span><strong>${esc(title)}</strong><span class="where">${esc(detail)}</span></span></li>`;
-  $('#repIncludes').innerHTML =
-    item(true, 'AI crawler access', 'Checked fresh when the report is created.') +
-    item(true, 'AI readiness of the homepage', 'Checked fresh when the report is created.') +
-    item(!!s, 'Site scan', s ? `Latest scan from ${(s.started_at || '').slice(0, 10)}.` : 'Run a site scan for this client to include it.') +
-    item(!!c, 'Visibility in AI answers', c ? `Latest citation test from ${(c.started_at || '').slice(0, 10)}.` : 'Run an AI citations test to include it.') +
-    item(true, 'Competitor comparison', 'The latest comparison for this client, if there is one.');
+  const s = p.latest && p.latest.scan, c = p.latest && p.latest.cite, m = p.monitor || {};
+  const prefs = p.report_prefs || {};
+  const avail = {
+    access: 'Checked fresh when the report is created.',
+    readiness: 'Checked fresh for the pages listed.',
+    scan: s ? `Latest scan from ${(s.started_at || '').slice(0, 10)}.` : 'No scan yet; run one on Site scan.',
+    cite: c ? `Latest citation test from ${(c.started_at || '').slice(0, 10)}.` : 'No test yet; run one on AI citations.',
+    compare: 'The latest comparison for this client, if there is one.',
+    monitor: (m.last_run ? `Latest check ${m.last_run.slice(0, 10)}.` : 'Monitoring has not run yet.') + ' Full reports only.',
+  };
+  if ($('#repMain').dataset.loaded !== p.id){
+    $('#repTitle').value = prefs.title || 'AI visibility report';
+    $('#repDetail').value = prefs.detail || 'full';
+    $('#repPages').value = (prefs.pages && prefs.pages.length ? prefs.pages : [p.site]).join('\n');
+    $('#repNext').value = prefs.next_steps || '';
+    $('#repNotes').value = '';
+    REP_SECS = prefs.sections || REP_LABELS.map(x => x[0]);
+    $('#repMain').dataset.loaded = p.id;
+    $('#repStatus').textContent = '';
+  }
+  $('#repSections').innerHTML = REP_LABELS.map(([k, label]) => `<label><input type="checkbox" class="rep-sec" value="${k}" ${REP_SECS.includes(k) ? 'checked' : ''}>
+    <span><strong>${esc(label)}</strong><span class="where">${esc(avail[k])}</span></span></label>`).join('');
+  $$('.rep-sec').forEach(cb => cb.onchange = () => { REP_SECS = $$('.rep-sec:checked').map(x => x.value); });
   $('#repBrandNote').innerHTML = SETTINGS.agency_name ? `Branded as ${esc(SETTINGS.agency_name)}.` : 'Add your agency name in <a class="links" href="#/settings">Settings</a> to brand reports.';
   loadReports();
   loadPortalUsers();
@@ -1638,10 +1656,12 @@ async function loadReports(){
   try{
     const d = await api('/api/reports?project=' + encodeURIComponent(p.id));
     const rows = d.reports || [];
-    $('#repList').innerHTML = rows.length ? `<thead><tr><th>Created</th><th>Includes</th><th></th></tr></thead><tbody>${rows.map(r => {
+    $('#repList').innerHTML = rows.length ? `<thead><tr><th>Created</th><th>Report</th><th></th></tr></thead><tbody>${rows.map(r => {
       const has = r.has || {};
-      const parts = [has.access && 'access', has.readiness && 'readiness', has.scan && 'site scan', has.cite && 'AI answers', has.compare && 'competitors'].filter(Boolean);
-      return `<tr><td class="num">${esc(r.created_at.slice(0, 16))}</td><td>${esc(parts.join(', '))}</td>
+      const parts = r.sections ? r.sections.map(k => (REP_LABELS.find(x => x[0] === k) || [k, k])[1]) :
+        [has.access && 'AI crawler access', has.readiness && 'AI readiness', has.scan && 'Site scan', has.cite && 'Visibility in AI answers', has.compare && 'Competitors'].filter(Boolean);
+      return `<tr><td class="num">${esc(r.created_at.slice(0, 16))}</td><td><strong>${esc(r.title || 'AI visibility report')}</strong>
+        ${r.detail === 'summary' ? '<span class="chip na">Summary</span>' : '<span class="chip na">Full</span>'}<span class="sub">${esc(parts.join(', '))}</span></td>
         <td><div class="row" style="gap:12px">
           <a class="links" style="margin:0" href="/r/${esc(r.id)}" target="_blank" rel="noopener">Open</a>
           <a class="links" style="margin:0" href="/r/${esc(r.id)}.pdf">Download PDF</a>
@@ -1660,9 +1680,14 @@ async function loadReports(){
 $('#repBtn').onclick = async () => {
   const p = activeProject(); if (!p) return;
   $('#repBtn').disabled = true;
-  $('#repStatus').textContent = 'Checking crawler access and the homepage, then building the report…';
+  const sections = $$('.rep-sec:checked').map(x => x.value);
+  const pages = $('#repPages').value.split('\n').map(x => x.trim()).filter(Boolean);
+  if (!sections.length){ $('#repStatus').textContent = 'Choose at least one section.'; $('#repBtn').disabled = false; return; }
+  if (pages.length > 3){ $('#repStatus').textContent = 'List up to 3 pages to review.'; $('#repBtn').disabled = false; return; }
+  $('#repStatus').textContent = sections.includes('readiness') ? `Checking crawler access and ${plural(Math.max(1, pages.length), 'page')}, then building the report…` : 'Building the report…';
   try{
-    const d = await post('/api/report', {project_id: p.id, notes: $('#repNotes').value});
+    const d = await post('/api/report', {project_id: p.id, notes: $('#repNotes').value, next_steps: $('#repNext').value,
+      title: $('#repTitle').value, detail: $('#repDetail').value, sections, pages});
     if (d.error){ $('#repStatus').textContent = d.error; return; }
     $('#repStatus').innerHTML = `Report created. <a class="links" href="/r/${esc(d.id)}" target="_blank" rel="noopener">Open it</a> or <a class="links" href="/r/${esc(d.id)}.pdf">download the PDF</a>.`;
     loadReports();
