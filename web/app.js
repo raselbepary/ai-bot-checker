@@ -74,6 +74,11 @@ function applySettings(s){
   $('#smtpPass').placeholder = sm.password_set ? 'Saved (leave empty to keep it)' : '';
   renderLogos(s);
   scanEstimate();
+  const df = s.dataforseo || {};
+  [['#dfsLogin', df.login], ['#dfsLoc', df.location === 'United States' ? '' : df.location], ['#helperModel', s.helper_model]]
+    .forEach(([sel, v]) => { if (document.activeElement !== $(sel)) $(sel).value = v || ''; });
+  $('#dfsPass').placeholder = df.password_set ? 'Saved (leave empty to keep it)' : '';
+  if ($('#citeModels')) renderCiteModels();
 }
 function renderModelPicks(){
   $('#modelPick').innerHTML = currentModels().map((m, i) =>
@@ -719,15 +724,22 @@ function renderCiteModels(){
   const box = $('#citeModels'); if (!box) return;
   const prev = new Set($$('.cite-model:checked').map(c => c.value));
   const list = currentModels();
-  box.innerHTML = list.map((m, i) => `<label><input type="checkbox" class="cite-model" value="${esc(m)}" ${(prev.size ? prev.has(m) : i < 3) ? 'checked' : ''}> ${esc(m)}</label>`).join('');
+  const dfs = (SETTINGS && SETTINGS.dataforseo) || {};
+  const shown = new Set($$('.cite-model').map(c => c.value));
+  box.innerHTML = list.map((m, i) => `<label><input type="checkbox" class="cite-model" value="${esc(m)}" ${(prev.size ? prev.has(m) : i < 3) ? 'checked' : ''}> ${esc(m)}</label>`).join('')
+    + (dfs.ready ? `<label><input type="checkbox" class="cite-model" value="${AIO_ID}" ${(shown.has(AIO_ID) ? prev.has(AIO_ID) : true) ? 'checked' : ''}> Google AI Overviews <span class="note" style="margin:0">via DataForSEO</span></label>`
+      : '<div class="note" style="margin:2px 0 0">Add a DataForSEO login in <a class="links" href="#/settings">Settings</a> to include Google AI Overviews.</div>');
   $$('.cite-model').forEach(c => c.onchange = citeEstimate);
   citeEstimate();
 }
 function citeLines(){ return $('#citePrompts').value.split('\n').map(s => s.trim()).filter(Boolean); }
 function citeEstimate(){
-  const q = Math.min(citeLines().length, 10), m = Math.min($$('.cite-model:checked').length, 6);
+  const q = citeLines().length, sel = $$('.cite-model:checked').map(c => c.value), m = sel.length, aio = sel.includes(AIO_ID);
+  $('#citeCount').textContent = q ? `(${plural(q, 'question')}${q > citeMax() ? `; the limit is ${citeMax()}` : ''})` : '';
   $('#citeEstimate').textContent = q && m
-    ? `This runs ${plural(q, 'question')} × ${plural(m, 'model')} = ${plural(q * m, 'answer')}. Each answer costs the model's usage plus its searches (roughly $0.005 to $0.02 per search with Exa, Parallel or Perplexity; Firecrawl costs more; native search is priced by the model provider). Each model may search up to 3 times per answer.`
+    ? `This runs ${plural(q, 'question')} × ${plural(m, 'engine')} = ${plural(q * m, 'answer')}, about ${Math.max(1, Math.round(q * m / 6 * 25 / 60))} min. AI model answers cost the model's usage plus searches (roughly $0.005 to $0.02 per search with Exa, Parallel or Perplexity; Firecrawl costs more).`
+      + (aio ? ' Google AI Overviews cost about $0.004 per question in DataForSEO credits.' : '')
+      + ($('#citePositions') && $('#citePositions').checked ? ' Finding positions adds one short call per answer.' : '')
     : 'Add questions and pick models to see how many answers this will run.';
 }
 CITE_FIELDS.forEach(id => $('#' + id).addEventListener('input', () => {
@@ -748,15 +760,15 @@ async function startCite(){
   const models = $$('.cite-model:checked').map(c => c.value);
   if (!$('#citeDomain').value.trim()){ $('#citeStatus').textContent = "Enter your site's domain."; return; }
   if (!prompts.length){ $('#citeStatus').textContent = 'Add at least one question.'; return; }
-  if (prompts.length > 10){ $('#citeStatus').textContent = 'Use up to 10 questions per test.'; return; }
-  if (!models.length || models.length > 6){ $('#citeStatus').textContent = 'Pick between 1 and 6 models.'; return; }
+  if (prompts.length > citeMax()){ $('#citeStatus').textContent = `Use up to ${citeMax()} questions per test.`; return; }
+  if (!models.length || models.filter(m => m !== AIO_ID).length > 6){ $('#citeStatus').textContent = 'Pick between 1 and 6 models, plus Google AI Overviews if you like.'; return; }
   const loc = $('#citeLocation').value.split(',').map(s => s.trim());
   const location = loc[0] ? {city: loc[0] || '', region: loc[1] || '', country: loc[2] || ''} : null;
   $('#citeBtn').disabled = true;
   $('#citeStatus').textContent = 'Starting…';
   try{
     const d = await post('/api/cite/start', {domain: $('#citeDomain').value, brands: $('#citeBrand').value, competitors: $('#citeComp').value,
-      prompts, models, engine: $('#citeEngine').value, location, sentiment: $('#citeSentiment').checked});
+      prompts, models, engine: $('#citeEngine').value, location, sentiment: $('#citeSentiment').checked, positions: $('#citePositions').checked});
     if (d.error){ $('#citeStatus').textContent = d.error; $('#citeBtn').disabled = false; return; }
     pollCite(d.id);
   }catch(e){ $('#citeStatus').textContent = 'Could not start the test: ' + e.message; $('#citeBtn').disabled = false; }
@@ -784,6 +796,7 @@ function domMatch(h, d){ return !!h && !!d && (h === d || h.endsWith('.' + d)); 
 function compDomains(){ return (CITE.results.find(r => r.competitors) || {competitors: []}).competitors.map(c => c.label); }
 function citeStatusOf(r){
   if (r.error) return 'error';
+  if (r.no_answer) return 'no answer';
   if (r.brand.cited) return 'cited';
   if (r.brand.mentioned) return 'mentioned';
   return 'none';
@@ -792,6 +805,8 @@ function citeChip(r){
   if (!r) return '<span class="chip na">…</span>';
   const s = citeStatusOf(r);
   if (s === 'error') return `<span class="chip bad" title="${esc(r.error)}">Error</span>`;
+  if (s === 'no answer') return '<span class="chip na" title="Google showed no AI Overview for this search">No AI Overview</span>';
+  if (r.brand && r.brand.pos) return `<span class="chip ok">#${r.brand.pos}${r.brand.cited ? ' · cited' : ''}</span>`;
   if (s === 'cited') return `<span class="chip ok">Cited #${r.brand.rank}${r.brand.mentioned ? ' + named' : ''}</span>`;
   if (s === 'mentioned') return '<span class="chip warn">Named, not cited</span>';
   return '<span class="chip na">Not found</span>';
@@ -811,8 +826,8 @@ function renderCite(){
   $('#citeResults').classList.toggle('hidden', !d.results.length);
   if (!d.results.length) return;
 
-  const ok = d.results.filter(r => !r.error);
-  const errors = d.results.length - ok.length;
+  const ok = d.results.filter(r => !r.error && !r.no_answer);
+  const errors = d.results.filter(r => r.error).length;
   const cited = ok.filter(r => r.brand.cited), named = ok.filter(r => r.brand.mentioned);
   const pct = (n, t) => t ? Math.round(n / t * 100) + '%' : '–';
   const ranks = cited.map(r => r.brand.rank);
@@ -840,7 +855,7 @@ function renderCite(){
     }).join('')}</tbody>`;
 
   const idx = new Map(d.results.map((r, i) => [r.prompt + '\u0000' + r.model, i]));
-  $('#citeMatrix').innerHTML = `<thead><tr><th>Question</th>${d.models.map(m => `<th>${esc(m)}</th>`).join('')}</tr></thead><tbody>${
+  $('#citeMatrix').innerHTML = `<thead><tr><th>Question</th>${d.models.map(m => `<th>${esc(engineLabel(m))}</th>`).join('')}</tr></thead><tbody>${
     d.prompts.map(p => `<tr><td>${esc(p)}</td>${d.models.map(m => {
       const i = idx.get(p + '\u0000' + m);
       return `<td>${i === undefined ? citeChip(null) : `<button class="cell" data-ans="${i}">${citeChip(d.results[i])}</button>`}</td>`;
@@ -856,7 +871,7 @@ function renderCite(){
     const r = d.results[i];
     const srcs = (r.citations || []).length ? r.citations : (r.text_links || []).map(u => ({url: u, title: ''}));
     return `<details class="bot" id="cans-${i}">
-      <summary><span>${esc(r.model)}</span>${citeChip(r)}<span class="note" style="margin:0;font-weight:400">${esc(r.prompt)}</span></summary>
+      <summary><span>${esc(engineLabel(r.model))}</span>${citeChip(r)}<span class="note" style="margin:0;font-weight:400">${esc(r.prompt)}</span></summary>
       <div class="dbody">
         ${r.error ? `<p class="chip bad" style="white-space:normal">${esc(r.error)}</p>` : `
         <div class="note" style="margin:0 0 8px">${r.searches ? plural(r.searches, 'search') + ' recorded by OpenRouter' : 'No search recorded by OpenRouter'}, ${(r.ms / 1000).toFixed(1)} s${r.tokens ? ', ' + r.tokens.toLocaleString() + ' tokens' : ''}</div>
@@ -872,6 +887,7 @@ function renderCite(){
       </div></details>`;
   }).join('');
   renderCiteInsights();
+  renderCiteAudit();
   renderTrend();
 }
 
@@ -1101,7 +1117,7 @@ $('#projSave').onclick = async () => {
   const questions = $('#pQuestions').value.split('\n').map(s => s.trim()).filter(Boolean);
   if (!$('#pName').value.trim()){ $('#projFormNote').textContent = 'Give the project a name.'; return; }
   if (!$('#pSite').value.trim()){ $('#projFormNote').textContent = 'Add the website address.'; return; }
-  if (questions.length > 10){ $('#projFormNote').textContent = 'Use up to 10 questions.'; return; }
+  if (questions.length > citeMax()){ $('#projFormNote').textContent = `Use up to ${citeMax()} questions.`; return; }
   $('#projSave').disabled = true;
   try{
     const d = await post('/api/projects/save', {id: EDITING ? EDITING.id : '', name: $('#pName').value, site: $('#pSite').value,
@@ -1280,7 +1296,7 @@ function highlightAnswer(text, d){
 
 function renderCiteInsights(){
   const d = CITE; if (!d) return;
-  const ok = d.results.filter(r => !r.error);
+  const ok = d.results.filter(r => !r.error && !r.no_answer);
   const comps = parseComps(d.competitors);
   const compOf = h => comps.find(c => c.domain && domMatch(h, c.domain));
   const hosts = new Map(), opps = new Map();
@@ -1383,19 +1399,19 @@ $('#qAdd').onclick = () => {
   const all = cur.concat(add);
   $('#citePrompts').value = all.join('\n');
   $('#citePrompts').dispatchEvent(new Event('input'));
-  $('#qStatus').textContent = all.length > 10
-    ? `Added ${plural(add.length, 'question')}. You now have ${all.length}; a test uses up to 10, so remove some before running.`
+  $('#qStatus').textContent = all.length > citeMax()
+    ? `Added ${plural(add.length, 'question')}. You now have ${all.length}; a test uses up to ${citeMax()}, so remove some before running.`
     : `Added ${plural(add.length, 'question')}.`;
 };
 $('#qSaveProj').onclick = async () => {
   const p = activeProject(); if (!p) return;
-  const qs = (p.questions || []).concat(pickedIdeas().filter(q => !(p.questions || []).includes(q))).slice(0, 10);
+  const qs = (p.questions || []).concat(pickedIdeas().filter(q => !(p.questions || []).includes(q))).slice(0, citeMax());
   try{
     const r = await post('/api/projects/save', {id: p.id, name: p.name, site: p.site, brands: p.brands, competitors: p.competitors, location: p.location, questions: qs});
     if (r.error) throw new Error(r.error);
     await loadProjects();
     applyProject(PROJECTS.find(x => x.id === p.id), false);
-    $('#qStatus').textContent = `Saved to ${p.name}: ${plural(qs.length, 'question')} (projects keep up to 10).`;
+    $('#qStatus').textContent = `Saved to ${p.name}: ${plural(qs.length, 'question')}.`;
   }catch(e){ $('#qStatus').textContent = 'Could not save: ' + e.message; }
 };
 
@@ -1929,6 +1945,87 @@ function scanEstimate(){
   $('#scanEst').textContent = t;
 }
 $('#scanLimit').addEventListener('input', () => { store('abvc_scan_limit', $('#scanLimit').value); scanEstimate(); });
+
+/* ---------------------------------------------------------------- answer audit */
+const AIO_ID = 'google/ai-overviews';
+function engineLabel(m){ return m === AIO_ID ? 'Google AI Overviews' : m; }
+function citeMax(){ return (SETTINGS && SETTINGS.cite_max) || 200; }
+function entKey(s){
+  return String(s || '').toLowerCase().replace(/&/g, ' and ')
+    .replace(/\b(inc|llc|l\.?p|ltd|limited|corp|corporation|co|company|plc|group|holdings|the|bdc)\b\.?/g, ' ')
+    .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function isBrandName(n, d){
+  const k = entKey(n), flat = k.replace(/ /g, '');
+  const keys = (d.brands || []).map(entKey).filter(Boolean);
+  if (keys.some(kk => kk === k || (Math.min(kk.length, k.length) >= 4 && (kk.includes(k) || k.includes(kk))))) return true;
+  const stem = (d.domain || '').split('.')[0];
+  return stem.length >= 4 && flat.length >= 4 && (flat.includes(stem) || stem.includes(flat));
+}
+function bars(rows){
+  const max = Math.max(1, ...rows.map(r => r[1]));
+  return rows.map(([name, v, me]) => `<div class="br${me ? ' me' : ''}"><span title="${esc(name)}">${esc(name)}</span><div class="bt"><i style="width:${Math.round(v / max * 100)}%"></i></div><b>${v}</b></div>`).join('');
+}
+function renderCiteAudit(){
+  const d = CITE;
+  const ok = d.results.filter(r => !r.error && !r.no_answer);
+  $('#citeAuditPanel').classList.toggle('hidden', !ok.length);
+  if (!ok.length) return;
+  const byq = new Map();
+  ok.forEach(r => { if (!byq.has(r.prompt)) byq.set(r.prompt, []); byq.get(r.prompt).push(r); });
+  const qs = [...byq.values()];
+  const namedQ = qs.filter(rs => rs.some(r => r.brand.mentioned)).length;
+  const withPos = ok.filter(r => r.entities);
+  const top3Q = qs.filter(rs => rs.some(r => r.brand.pos && r.brand.pos <= 3)).length;
+  const best = withPos.filter(r => r.brand.pos).sort((a, b) => a.brand.pos - b.brand.pos)[0];
+  const namedA = ok.filter(r => r.brand.mentioned).length;
+  const noAio = d.results.filter(r => r.no_answer).length;
+  const kpi = (big, small) => `<div class="akpi"><b>${esc(big)}</b><span>${esc(small)}</span></div>`;
+  $('#citeAuditKpis').innerHTML = kpi(`${namedQ} of ${byq.size}`, 'questions where at least one engine names you')
+    + (withPos.length ? kpi(String(top3Q), `question${top3Q === 1 ? '' : 's'} with you in a top 3` + (best ? ` (best: #${best.brand.pos} on ${engineLabel(best.model)}, “${best.prompt}”)` : '')) : '')
+    + kpi(`${namedA} of ${ok.length}`, 'answers that name you' + (noAio ? ` (${noAio} Google search${noAio === 1 ? '' : 'es'} showed no AI Overview)` : ''));
+  if (withPos.length){
+    const counts = new Map();
+    withPos.forEach(r => r.entities.forEach(n => {
+      if (isBrandName(n, d)) return;
+      const k = entKey(n); if (!k) return;
+      const e = counts.get(k) || {name: n, qs: new Set()}; e.qs.add(r.prompt); counts.set(k, e);
+    }));
+    const top = [...counts.values()].sort((a, b) => b.qs.size - a.qs.size).slice(0, 10).map(e => [e.name, e.qs.size, false]);
+    $('#citeInstead').innerHTML = bars(top.concat([[`${d.domain} (you)`, namedQ, true]]).sort((a, b) => b[1] - a[1]));
+  } else {
+    $('#citeInstead').innerHTML = '<div class="note" style="margin:0">Turn on “Find where each answer places you” before the next test to see who AI names instead.</div>';
+  }
+  $('#citeByEngine').innerHTML = bars(d.models.map(m => {
+    const rs = ok.filter(r => r.model === m);
+    return [`${engineLabel(m)} (of ${rs.length})`, rs.filter(r => r.brand.mentioned).length, false];
+  }));
+  const comps = (ok.find(r => r.competitors) || {competitors: []}).competitors.map(c => c.label);
+  const peerRows = comps.map((label, i) => [label, ok.filter(r => ((r.competitors || [])[i] || {}).mentioned).length, false]);
+  $('#citePeers').innerHTML = comps.length ? bars(peerRows.concat([[`${d.domain} (you)`, namedA, true]]).sort((a, b) => b[1] - a[1]))
+    : '<div class="note" style="margin:0">Add competitors to the project or the form to compare.</div>';
+}
+
+$('#saveDfs').onclick = async () => {
+  try{
+    const s = await post('/api/settings', {dataforseo: {login: $('#dfsLogin').value, password: $('#dfsPass').value, location: $('#dfsLoc').value},
+      helper_model: $('#helperModel').value});
+    if (s.error){ $('#dfsNote').textContent = s.error; return; }
+    $('#dfsPass').value = ''; applySettings(s);
+    $('#dfsNote').textContent = 'Saved.';
+  }catch(e){ $('#dfsNote').textContent = 'Could not save: ' + e.message; }
+};
+$('#testDfs').onclick = async () => {
+  $('#testDfs').disabled = true; $('#dfsNote').textContent = 'Saving and checking…';
+  try{
+    const s = await post('/api/settings', {dataforseo: {login: $('#dfsLogin').value, password: $('#dfsPass').value, location: $('#dfsLoc').value},
+      helper_model: $('#helperModel').value});
+    if (!s.error){ $('#dfsPass').value = ''; applySettings(s); }
+    const d = await post('/api/dataforseo/check', {});
+    $('#dfsNote').textContent = d.error ? d.error : `Connected.${d.balance !== null && d.balance !== undefined ? ` Balance: $${Number(d.balance).toFixed(2)}.` : ''}`;
+  }catch(e){ $('#dfsNote').textContent = 'Could not check: ' + e.message; }
+  finally{ $('#testDfs').disabled = false; }
+};
 
 /* ---------------------------------------------------------------- start */
 async function init(){
