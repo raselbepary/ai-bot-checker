@@ -2141,42 +2141,82 @@ CMP_ROWS = [("access", "AI crawlers allowed (of 5 main AI bots)"), ("score", "AI
             ("schemaErr", "Structured data errors"), ("counters", "Animated counters"), ("dated", "Shows a publish or update date"),
             ("llms", "llms.txt"), ("sitemap", "Sitemap listed in robots.txt")]
 REPORT_CSS = """
-:root{--ink:#18181b;--muted:#71717a;--line:#e4e4e7;--soft:#f4f4f5;--accent:#c2410c;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
+:root{--ink:#18181b;--muted:#71717a;--line:#e4e4e7;--soft:#f4f4f5;--accent:#c2410c;--brand:#e85800;--ok:#15803d;--ok-bg:#ecfdf3;--bad:#b91c1c;--bad-bg:#fef2f2;--warn:#a16207;--warn-bg:#fef8db;--na:#f4f4f5}
 *{box-sizing:border-box}
 body{margin:0;background:#f4f4f5;color:var(--ink);font:14px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-.bar{position:sticky;top:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#18181b}
-.bar a{color:#fff;background:var(--accent);text-decoration:none;font-weight:600;padding:7px 14px;border-radius:7px;font-size:14px}
-.doc{max-width:900px;margin:24px auto;background:#fff;padding:44px 52px;border-radius:16px;border:1px solid var(--line)}
+a{color:var(--accent)}
+.bar{position:sticky;top:0;z-index:5;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#18181b}
+.bar a{color:#fff;background:var(--accent);text-decoration:none;font-weight:600;padding:7px 14px;border-radius:8px;font-size:14px}
+.doc{max-width:900px;margin:24px auto;background:#fff;padding:48px 56px;border-radius:16px;border:1px solid var(--line)}
 header.cover{border-bottom:2px solid var(--ink);padding-bottom:22px;margin-bottom:26px}
 .agency{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.01em}
 h1{font:800 32px/1.12 "Archivo","Instrument Sans",sans-serif;font-stretch:115%;margin:14px 0 6px;letter-spacing:-.01em}
 .client{font-size:18px;font-weight:600}
 .meta{color:var(--muted);font-size:13.5px;margin-top:4px}
-h2{font-size:19px;margin:34px 0 8px;letter-spacing:-.01em;break-after:avoid}
-h3{font-size:15px;margin:20px 0 6px;break-after:avoid}
+h2{font:800 21px/1.25 "Archivo","Instrument Sans",sans-serif;font-stretch:110%;margin:38px 0 10px;break-after:avoid}
+h3{font-size:15px;margin:22px 0 6px;break-after:avoid}
 p{margin:6px 0}
 .muted{color:var(--muted);font-size:13px}
-.notes{background:var(--soft);border-left:3px solid var(--accent);padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:6px}
+.notes,.box{background:var(--soft);border-left:3px solid var(--brand);padding:14px 18px;border-radius:0 10px 10px 0;margin:8px 0}
+.box p:first-child,.notes p:first-child{margin-top:0} .box p:last-child,.notes p:last-child{margin-bottom:0}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}
-.tile{border:1px solid var(--line);border-radius:9px;padding:12px 14px;break-inside:avoid;border-top-width:4px}
-.tile.ok{border-top-color:var(--ok)} .tile.warn{border-top-color:#d69e2e} .tile.bad{border-top-color:var(--bad)} .tile.na{border-top-color:var(--line)}
+.tile{border:1px solid var(--line);border-radius:10px;padding:12px 14px;break-inside:avoid;border-top-width:4px}
+.tile.ok{border-top-color:var(--ok)} .tile.warn{border-top-color:#d97706} .tile.bad{border-top-color:var(--bad)} .tile.na{border-top-color:var(--line)}
 .tl{font-size:12px;color:var(--muted);font-weight:600} .tv{font:800 22px/1.25 "Archivo","Instrument Sans",sans-serif;font-stretch:110%;margin:2px 0} .ts{font-size:12px;color:var(--muted)}
-ol.find{padding-left:20px;margin:8px 0} ol.find li{margin:0 0 9px;break-inside:avoid} ol.find .muted{display:block}
 table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 4px}
-th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;color:var(--muted);background:var(--soft)}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);background:var(--soft);font-weight:600}
 tr{break-inside:avoid}
 td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 td.best{background:var(--ok-bg)} td.worst{background:var(--bad-bg)}
-.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--na);color:var(--muted)}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--na);color:var(--muted)}
 .tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.warn{background:var(--warn-bg);color:var(--warn)}
 .url{word-break:break-all}
-a{color:var(--accent)}
 .brandlogo{display:block;height:24px;width:auto;margin:0 0 12px}
-footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+/* cover page */
+.coverpage{min-height:1020px;display:flex;flex-direction:column;justify-content:space-between;break-after:page;margin-bottom:56px}
+.coverpage .brandlogo{height:32px;margin:0}
+.cv-mid{padding:60px 0 40px}
+.cv-rule{width:80px;height:7px;background:var(--brand);border-radius:4px;margin:0 0 30px}
+.coverpage h1{font-size:56px;line-height:1.02;margin:0 0 26px;font-stretch:118%;letter-spacing:-.015em;max-width:12ch}
+.cv-client{font:700 26px/1.2 "Archivo","Instrument Sans",sans-serif;font-stretch:108%}
+.cv-site{color:var(--muted);font-size:15px;margin-top:6px}
+.cv-foot{display:grid;grid-template-columns:2fr 1fr 1fr;gap:20px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:12.5px}
+.cv-foot strong{display:block;color:var(--ink);font-size:14px;margin-top:2px}
+/* scorecard */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:12px}
+.kpi{border:1px solid var(--line);border-radius:12px;padding:14px 16px;break-inside:avoid;display:flex;gap:14px;align-items:center}
+.k-l{font-size:12px;color:var(--muted);font-weight:600}
+.k-v{font:800 24px/1.15 "Archivo","Instrument Sans",sans-serif;font-stretch:110%;margin:2px 0}
+.k-s{font-size:12px;color:var(--muted)}
+.delta{font-size:12px;font-weight:700;margin-top:4px} .delta.up{color:var(--ok)} .delta.down{color:var(--bad)} .delta.flat{color:var(--muted)}
+svg.dial{flex:none}
+/* priorities: a ranked list, so it is numbered */
+ol.prio{list-style:none;padding:0;margin:8px 0;counter-reset:p}
+ol.prio li{position:relative;padding:12px 0 12px 42px;border-bottom:1px solid var(--line);break-inside:avoid}
+ol.prio li::before{counter-increment:p;content:counter(p);position:absolute;left:0;top:12px;width:28px;height:28px;border-radius:8px;background:var(--ink);color:#fff;
+  display:grid;place-items:center;font:800 13px/1 "Archivo","Instrument Sans",sans-serif}
+ol.prio .ttl{font-weight:650;font-size:14.5px}
+ol.prio .why{color:var(--muted);font-size:13px;margin-top:2px}
+ol.prio .do{font-size:13.5px;margin-top:4px}
+ol.prio .do b{color:var(--accent)}
+/* details */
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:10px}
+.agent{border:1px solid var(--line);border-radius:10px;padding:8px 11px;display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:13px;break-inside:avoid}
+.agent.blocked{border-color:#fecaca;background:var(--bad-bg)}
+.pagecard{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0;break-inside:avoid}
+.pagecard .ph{display:flex;gap:14px;align-items:center;margin-bottom:6px}
+svg.chart{width:100%;height:auto;display:block;margin:8px 0 4px}
+svg.chart text{font-family:"Instrument Sans",-apple-system,sans-serif}
+h2 + .muted,h3 + .muted,h2 + p,.ph{break-after:avoid}
 @page{size:A4;margin:14mm}
-@media print{body{background:#fff}.bar{display:none}.doc{margin:0;padding:0;max-width:none;border-radius:0}h2{margin-top:26px}}
-@media (max-width:700px){.doc{margin:0;padding:24px 18px;border-radius:0}}
+@media print{
+  body{background:#fff}.bar{display:none}.doc{margin:0;padding:0;max-width:none;border:0;border-radius:0}
+  .coverpage{min-height:255mm;margin:0}
+  h2{margin-top:28px}
+}
+@media (max-width:700px){.doc{margin:0;padding:24px 18px;border-radius:0}.coverpage{min-height:auto}.coverpage h1{font-size:38px}.cv-foot{grid-template-columns:1fr}}
 """
 
 
@@ -2256,158 +2296,340 @@ def _cite_insights(j):
     return len(ok), sov, top, sorted(opps.items(), key=lambda x: -x[1])[:5]
 
 
-def render_report(proj, agency, contact, notes, access, ready, scan, cite, cmpj, created_label):
-    findings, tiles, sections = [], [], []
+REPORT_SECTIONS = [("access", "AI crawler access"), ("readiness", "AI readiness"), ("scan", "Site scan"),
+                   ("cite", "Visibility in AI answers"), ("compare", "Competitors"), ("monitor", "Monitoring history")]
+READY_ACTIONS = {
+    "Clear opening paragraph": "Open the page with two or three sentences that answer its main question directly.",
+    "One main heading": "Use one H1 heading that states what the page is about.",
+    "Heading levels in order": "Keep headings in order (H1, then H2, then H3) without skipping levels.",
+    "Section headings": "Split the content into sections with descriptive H2 headings.",
+    "Question-style headings": "Phrase some headings as the questions customers ask.",
+    "Readable paragraphs": "Split long paragraphs so each one makes a single point.",
+    "Lists or tables": "Present steps, features and comparisons as lists or tables.",
+    "Enough readable text": "Add useful text that is in the page's HTML, not loaded only by JavaScript.",
+    "Animated counters": "Make animated counters show their final value in the HTML.",
+    "Concrete numbers": "Add specific facts such as years in business, projects completed or price ranges.",
+    "Contact details as text": "Show the phone number and address as plain text.",
+    "Publish or update date": "Show a 'Last updated' date and add dateModified to the structured data.",
+    "Author shown": "Name the author, with a short bio.",
+    "Structured data": "Add Organization or LocalBusiness structured data, or fix its errors.",
+    "Page title": "Write a descriptive title of about 50 to 60 characters.",
+    "Meta description": "Write a one-sentence meta description of the page.",
+    "Can be indexed": "Remove noindex if the page should appear in search and AI answers.",
+    "Image descriptions": "Add alt text that describes each image.",
+    "Internal links": "Link to related pages on the site.",
+}
+SCAN_ACTIONS = {
+    "fetch": "Find out why these pages don't load (server errors or timeouts) and fix them.",
+    "blocked": "Ask the host or Cloudflare to stop showing bot challenges to verified AI crawlers.",
+    "http": "Fix these pages or redirect them to working ones.",
+    "robots": "Allow AI crawlers to read these pages in robots.txt.",
+    "counters": "Make animated counters show their final value in the HTML.",
+    "noindex": "Remove noindex from pages that should be found.",
+    "thin": "Add more readable text, and make sure content isn't loaded only by JavaScript.",
+    "title": "Give every page a descriptive title.",
+    "description": "Add a one-sentence meta description to these pages.",
+    "schema": "Add structured data to these pages.",
+    "schema_errors": "Fix the structured data errors (see the Structured data page).",
+}
+CMP_ACTIONS = {
+    "access": "Allow the blocked AI crawlers.", "score": "Work through the AI readiness items in this report.",
+    "words": "Add more readable text to the page.", "opening": "Open the page with a direct two- or three-sentence answer.",
+    "schema": "Add structured data.", "schemaErr": "Fix the structured data errors.",
+    "counters": "Make animated counters show their final value in the HTML.", "dated": "Show a 'Last updated' date.",
+    "llms": "Publish an llms.txt file (the llms.txt page can draft one).", "sitemap": "List the sitemap in robots.txt.",
+}
 
-    # AI readiness of the homepage (fresh)
-    if ready:
-        sc = ready["score"]
-        tiles.append(_tile("AI readiness (homepage)", f"{sc}/100", f"{ready['counts']['fail']} to fix, {ready['counts']['warn']} to improve",
-                           "ok" if sc >= 75 else "warn" if sc >= 50 else "bad"))
-        order = {"fail": 0, "warn": 1, "pass": 2}
-        for c in sorted([c for c in ready["checks"] if c["status"] != "pass"], key=lambda c: order[c["status"]])[:6]:
-            findings.append(("high" if c["status"] == "fail" else "medium", f"Homepage: {c['label']}", c["detail"]))
-        rows = "".join(f'<tr><td style="width:80px">{_tag(*STAT_TAG[c["status"]])}</td><td><strong>{_he(c["label"])}</strong>'
-                       f'<div class="muted">{_he(c["detail"])}</div></td></tr>'
-                       for c in sorted(ready["checks"], key=lambda c: order[c["status"]]))
-        sections.append(("AI readiness of the homepage",
-                         '<p class="muted">How easy the homepage is for AI tools to understand and quote, as GPTBot receives it.</p>'
-                         f'<table><tbody>{rows}</tbody></table>'))
-    else:
-        tiles.append(_tile("AI readiness (homepage)", "–", "Could not be checked", "na"))
 
-    # AI crawler access (fresh)
-    if access:
-        agents = access["agents"]
-        ok_n = sum(1 for a in agents if a["verdict"] == "allowed")
-        tiles.append(_tile("AI crawler access", f"{ok_n} of {len(agents)}", "AI crawlers allowed",
-                           "ok" if ok_n == len(agents) else "warn" if ok_n >= len(agents) - 2 else "bad"))
-        for a in agents:
-            if a["verdict"] != "allowed":
-                findings.append(("high", f"{a['token']} ({a['company']}) cannot read the site",
-                                 "Blocked by robots.txt." if a["verdict"] == "blocked_robots" else "Blocked by the server or firewall (error or challenge page)."))
-        verdict = {"allowed": ("ok", "Allowed"), "blocked_robots": ("bad", "Blocked by robots.txt"), "blocked_server": ("bad", "Blocked by server")}
-        rows = "".join(f'<tr><td><strong>{_he(a["token"])}</strong></td><td>{_he(a["company"])}</td><td class="muted">{_he(a["purpose"])}</td>'
-                       f'<td>{_tag(*verdict.get(a["verdict"], ("na", a["verdict"])))}</td></tr>' for a in agents)
-        sections.append(("AI crawler access",
-                         '<p class="muted">Whether each AI crawler may read the site (robots.txt) and actually gets the page from the server.</p>'
-                         f'<table><thead><tr><th>Crawler</th><th>Company</th><th>Used for</th><th>Result</th></tr></thead><tbody>{rows}</tbody></table>'))
-    else:
-        tiles.append(_tile("AI crawler access", "–", "Could not be checked", "na"))
+def _dial(score, size=60, good=75, fair=50):
+    if score is None:
+        return ""
+    color = "#15803d" if score >= good else "#d97706" if score >= fair else "#b91c1c"
+    r = 26
+    c = 2 * 3.14159265 * r
+    off = c * (1 - max(0, min(100, score)) / 100)
+    return (f'<svg class="dial" width="{size}" height="{size}" viewBox="0 0 64 64" aria-hidden="true">'
+            f'<circle cx="32" cy="32" r="{r}" fill="none" stroke="#f0f0f2" stroke-width="7"/>'
+            f'<circle cx="32" cy="32" r="{r}" fill="none" stroke="{color}" stroke-width="7" stroke-linecap="round" '
+            f'stroke-dasharray="{c:.1f}" stroke-dashoffset="{off:.1f}" transform="rotate(-90 32 32)"/>'
+            f'<text x="32" y="38" text-anchor="middle" font-family="Archivo, Instrument Sans, sans-serif" font-weight="800" '
+            f'font-size="17" fill="#18181b">{score}</text></svg>')
 
-    # Site scan (latest saved)
-    if scan:
-        res = scan.get("results") or []
-        t = len(res)
-        e = sum(1 for r in res if r.get("level") == "error")
-        w = sum(1 for r in res if r.get("level") == "warning")
-        tiles.append(_tile("Site scan", f"{e} · {w}", f"pages with errors · warnings, of {t} checked",
-                           "ok" if not e and not w else "warn" if not e else "bad"))
-        codes = {}
-        for r in res:
-            for i in r.get("issues") or []:
-                c = codes.setdefault(i["code"], [i["level"], 0])
-                c[1] += 1
-        ranked = sorted(codes.items(), key=lambda x: ({"error": 0, "warning": 1}.get(x[1][0], 2), -x[1][1]))
-        for code, (lvl, n) in ranked:
-            if lvl in ("error", "warning") and code != "redirect":
-                findings.append(("high" if lvl == "error" else "medium", f"Site scan: {SCAN_LABELS.get(code, code)}", f"Found on {n} of {t} pages."))
-        lvl_tag = {"error": ("bad", "Error"), "warning": ("warn", "Warning"), "info": ("na", "Info")}
-        irows = "".join(f'<tr><td>{_tag(*lvl_tag.get(lvl, ("na", lvl)))}</td><td>{_he(SCAN_LABELS.get(code, code))}</td><td class="num">{n} of {t}</td></tr>'
-                        for code, (lvl, n) in ranked) or '<tr><td colspan="3">No issues found.</td></tr>'
-        worst = [r for r in res if r.get("level") == "error"][:10]
-        prow = "".join(f'<tr><td class="url">{_he(r["url"])}</td><td class="muted">{_he("; ".join(i["msg"] for i in r.get("issues") or [] if i["level"] == "error"))}</td></tr>' for r in worst)
-        sections.append(("Site scan",
-                         f'<p class="muted">{t} pages checked as {_he(scan.get("bot_label") or "an AI crawler")} on {_he((scan.get("started_at") or "")[:10])}.</p>'
-                         f'<h3>Issues by type</h3><table><thead><tr><th>Level</th><th>Issue</th><th>Pages</th></tr></thead><tbody>{irows}</tbody></table>'
-                         + (f'<h3>Pages with errors</h3><table><thead><tr><th>Page</th><th>Errors</th></tr></thead><tbody>{prow}</tbody></table>' if worst else "")))
-    else:
-        tiles.append(_tile("Site scan", "–", "No scan yet", "na"))
 
-    # AI citations (latest saved)
-    if cite:
-        summ = cite.get("summary") or cite_summary(cite)
-        n, sov, top, opps = _cite_insights(cite)
-        score = summ.get("score")
-        tiles.append(_tile("AI visibility", f"{score}/100" if score is not None else "–", f"cited in {_pct(summ['cited'], summ['answers'])} of AI answers",
-                           "na" if score is None else "ok" if score >= 50 else "warn" if score >= 20 else "bad"))
-        if summ["answers"] and summ["cited"] / summ["answers"] < 0.3:
-            findings.append(("high", "AI assistants rarely cite the site", f"Cited as a source in {summ['cited']} of {summ['answers']} answers to customer questions."))
-        for h, c in opps[:3]:
-            findings.append(("medium", f"Get listed or mentioned on {h}", f"AI assistants cited it in {c} answers where the site was not cited."))
-        qs = "".join(f"<li>{_he(q)}</li>" for q in cite.get("prompts") or [])
-        srows = "".join(f'<tr><td><strong>{_he(lab)}</strong></td><td class="num">{m} ({_pct(m, n)})</td><td class="num">{c} ({_pct(c, n)})</td></tr>' for lab, m, c in sov)
-        trows = "".join(f'<tr><td>{_he(h)}</td><td class="num">{c} of {n}</td><td>{_he(w)}</td></tr>' for h, c, w in top)
-        sections.append(("Visibility in AI answers",
-                         f'<p class="muted">{n} answers from {len(cite.get("models") or [])} AI models with live web search, tested on {_he((cite.get("started_at") or "")[:10])}. '
-                         'Visibility score: up to 40 points when an answer names the business, up to 40 when it cites the site, up to 20 for positive wording.</p>'
-                         f'<h3>Questions tested</h3><ul>{qs}</ul>'
-                         f'<h3>Share of voice</h3><table><thead><tr><th>Brand</th><th>Named in answers</th><th>Cited as a source</th></tr></thead><tbody>{srows}</tbody></table>'
-                         + (f'<h3>Sources AI cited most</h3><table><thead><tr><th>Website</th><th>Cited in</th><th>Whose site</th></tr></thead><tbody>{trows}</tbody></table>' if top else "")))
-    else:
-        tiles.append(_tile("AI visibility", "–", "No citation test yet", "na"))
+def _delta(cur, prev, prev_date, higher_better=True):
+    if cur is None or prev is None:
+        return ""
+    d = cur - prev
+    if d == 0:
+        return f'<div class="delta flat">No change since {_he(prev_date)}</div>'
+    good = (d > 0) == higher_better
+    return f'<div class="delta {"up" if good else "down"}">{"+" if d > 0 else "−"}{abs(d)} since {_he(prev_date)}</div>'
 
-    # Competitors (latest saved)
-    if cmpj:
-        sites = cmpj.get("sites") or []
-        ms = [_cmp_metrics(s) for s in sites]
-        mine, behind = ms[0] if ms else None, []
-        if mine:
-            for key, label in CMP_ROWS:
-                if mine[key][1] is None:
-                    continue
-                better = [(s["host"], m[key][0]) for s, m in zip(sites[1:], ms[1:]) if m and m[key][1] is not None and m[key][1] > mine[key][1]]
-                if better:
-                    behind.append((label, mine[key][0], better))
-        tiles.append(_tile("Competitors", f"Behind on {len(behind)}", f"of {len(CMP_ROWS)} checks, vs {len(sites) - 1} competitors",
-                           "ok" if not behind else "warn" if len(behind) <= 3 else "bad"))
-        for label, yours, better in behind[:4]:
-            findings.append(("medium", f"Competitors ahead: {label}", f"This site: {yours}. " + "; ".join(f"{h}: {v}" for h, v in better) + "."))
-        head = "".join(f'<th>{"This site: " if s.get("you") else ""}{_he(s["host"])}</th>' for s in sites)
-        body = ""
-        for key, label in CMP_ROWS:
-            vals = [m[key][1] for m in ms if m and m[key][1] is not None]
-            best, worst = (max(vals), min(vals)) if vals else (None, None)
-            cells = ""
-            for m in ms:
-                if not m:
-                    cells += "<td>–</td>"
-                    continue
-                v = m[key][1]
-                cls = "" if v is None or best == worst else "best" if v == best else "worst" if v == worst else ""
-                cells += f'<td class="{cls}">{_he(m[key][0])}</td>'
-            body += f'<tr><td class="muted">{_he(label)}</td>{cells}</tr>'
-        sections.append(("Competitor comparison",
-                         f'<p class="muted">Checked on {_he((cmpj.get("checked_at") or "")[:10])}. Best result per row in green, weakest in red.</p>'
-                         f'<div style="overflow-x:auto"><table><thead><tr><th>Check</th>{head}</tr></thead><tbody>{body}</tbody></table></div>'))
-    else:
-        tiles.append(_tile("Competitors", "–", "No comparison yet", "na"))
+
+def _kpi(label, value, sub, delta="", dial=""):
+    head = f'<div class="k-l">{_he(label)}</div>' + ("" if dial else f'<div class="k-v">{_he(value)}</div>')
+    return f'<div class="kpi">{dial}<div>{head}<div class="k-s">{_he(sub)}</div>{delta}</div></div>'
+
+
+def _trend_svg(points):
+    n = len(points)
+    if n < 2:
+        return ""
+    W, H, L, R, T, B = 640, 180, 34, 18, 24, 28
+    pw, ph = W - L - R, H - T - B
+    xs = [L + i * pw / (n - 1) for i in range(n)]
+    ys = [T + ph * (1 - s / 100) for _d, s in points]
+    grid = "".join(f'<line x1="{L}" x2="{W - R}" y1="{T + ph * (1 - g / 100):.1f}" y2="{T + ph * (1 - g / 100):.1f}" stroke="#ececef"/>'
+                   f'<text x="{L - 8}" y="{T + ph * (1 - g / 100) + 4:.1f}" text-anchor="end" font-size="10" fill="#a1a1aa">{g}</text>'
+                   for g in (0, 50, 100))
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    dots = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="#e85800" stroke="#fff" stroke-width="2"/>'
+                   f'<text x="{x:.1f}" y="{y - 10:.1f}" text-anchor="middle" font-size="11.5" font-weight="700" fill="#18181b">{sc}</text>'
+                   for x, y, (_d, sc) in zip(xs, ys, points))
+    dates = (f'<text x="{xs[0]:.1f}" y="{H - 6}" font-size="10.5" fill="#71717a">{_he(points[0][0][:10])}</text>'
+             f'<text x="{xs[-1]:.1f}" y="{H - 6}" text-anchor="end" font-size="10.5" fill="#71717a">{_he(points[-1][0][:10])}</text>')
+    return (f'<svg class="chart" viewBox="0 0 {W} {H}" role="img" aria-label="AI visibility score over time">{grid}'
+            f'<polyline points="{line}" fill="none" stroke="#e85800" stroke-width="2.5" stroke-linejoin="round"/>{dots}{dates}</svg>')
+
+
+def render_report(proj, agency, contact, opts, data, prev, created_label):
+    secs, full = opts["sections"], opts["detail"] == "full"
+    pdate = ((prev or {}).get("created_at") or "")[:10]
+    pm = (prev or {}).get("metrics") or {}
+    findings, kpis, body, metrics = [], [], [], {}
+    order = {"fail": 0, "warn": 1, "pass": 2}
+
+    def find(sev, title, why, action):
+        findings.append((sev, title, why, action))
+
+    if "access" in secs:
+        access = data.get("access")
+        if access:
+            agents = access["agents"]
+            ok_n = sum(1 for a in agents if a["verdict"] == "allowed")
+            metrics["access"] = ok_n
+            kpis.append(_kpi("AI crawler access", f"{ok_n} of {len(agents)}", "AI crawlers can read the site", _delta(ok_n, pm.get("access"), pdate)))
+            for a in agents:
+                if a["verdict"] == "blocked_robots":
+                    find("high", f"{a['token']} ({a['company']}) is blocked by robots.txt", f"Used for: {a['purpose']}.",
+                         f"Allow {a['token']} in robots.txt. The AI access page can generate the rules.")
+                elif a["verdict"] != "allowed":
+                    find("high", f"{a['token']} ({a['company']}) is blocked by the server", "It receives an error or a bot challenge page instead of the content.",
+                         f"Ask the host or Cloudflare to allow {a['token']}, for example with a rule for verified AI crawlers.")
+            if full:
+                cells = "".join(f'<div class="agent{" blocked" if a["verdict"] != "allowed" else ""}"><span><strong>{_he(a["token"])}</strong> '
+                                f'<span class="muted">{_he(a["company"])}</span></span>'
+                                f'{_tag("ok", "Allowed") if a["verdict"] == "allowed" else _tag("bad", "Blocked")}</div>' for a in agents)
+                body.append(("AI crawler access", '<p class="muted">Whether each AI crawler may read the site (robots.txt) and actually receives '
+                             'the page from the server, checked when this report was created.</p>' + f'<div class="agrid">{cells}</div>'))
+        else:
+            kpis.append(_kpi("AI crawler access", "–", "Could not be checked"))
+
+    if "readiness" in secs:
+        readies = [r for r in (data.get("readies") or []) if r]
+        if readies:
+            avg = round(sum(r["score"] for r in readies) / len(readies))
+            metrics["readiness"] = avg
+            sub = f"average of {plural_py(len(readies), 'page')}" if len(readies) > 1 else "page reviewed"
+            kpis.append(_kpi("AI readiness", f"{avg}/100", sub, _delta(avg, pm.get("readiness"), pdate), dial=_dial(avg)))
+            seen = set()
+            for r in readies:
+                path = urllib.parse.urlsplit(r["final_url"] or r["url"]).path or "/"
+                for c in sorted([c for c in r["checks"] if c["status"] != "pass"], key=lambda c: order[c["status"]]):
+                    if c["label"] in seen:
+                        continue
+                    seen.add(c["label"])
+                    find("high" if c["status"] == "fail" else "medium", f"{c['label']} (on {path})", c["detail"], READY_ACTIONS.get(c["label"], ""))
+            if full:
+                cards = ""
+                for r in readies:
+                    bad = sorted([c for c in r["checks"] if c["status"] != "pass"], key=lambda c: order[c["status"]])
+                    passed = sum(1 for c in r["checks"] if c["status"] == "pass")
+                    rows = "".join(f'<tr><td style="width:84px">{_tag(*STAT_TAG[c["status"]])}</td><td><strong>{_he(c["label"])}</strong>'
+                                   f'<div class="muted">{_he(c["detail"])}</div></td></tr>' for c in bad)
+                    cards += (f'<div class="pagecard"><div class="ph">{_dial(r["score"], 56)}<div><strong class="url">{_he(r["final_url"] or r["url"])}</strong>'
+                              f'<div class="muted">{_he(r["title"])}</div></div></div>'
+                              + (f'<table><tbody>{rows}</tbody></table>' if rows else "")
+                              + f'<p class="muted">{plural_py(passed, "check")} passed.</p></div>')
+                body.append(("AI readiness", '<p class="muted">How easy each page is for AI tools to understand and quote, as GPTBot receives it.</p>' + cards))
+        else:
+            kpis.append(_kpi("AI readiness", "–", "Could not be checked"))
+
+    if "scan" in secs:
+        scan = data.get("scan")
+        if scan:
+            res = scan.get("results") or []
+            t = len(res)
+            e = sum(1 for r in res if r.get("level") == "error")
+            w = sum(1 for r in res if r.get("level") == "warning")
+            metrics["scan_errors"] = e
+            sdate = (scan.get("started_at") or "")[:10]
+            kpis.append(_kpi("Site scan", f"{e} with errors", f"{w} with warnings, of {plural_py(t, 'page')} ({sdate})",
+                             _delta(e, pm.get("scan_errors"), pdate, higher_better=False)))
+            codes = {}
+            for r in res:
+                for i in r.get("issues") or []:
+                    c = codes.setdefault(i["code"], [i["level"], 0])
+                    c[1] += 1
+            ranked = sorted(codes.items(), key=lambda x: ({"error": 0, "warning": 1}.get(x[1][0], 2), -x[1][1]))
+            for code, (lvl, n) in ranked:
+                if lvl in ("error", "warning") and code != "redirect":
+                    find("high" if lvl == "error" else "medium", f"{SCAN_LABELS.get(code, code)}: {n} of {t} pages",
+                         f"Found by the site scan on {sdate}.", SCAN_ACTIONS.get(code, ""))
+            if full:
+                lvl_tag = {"error": ("bad", "Error"), "warning": ("warn", "Warning"), "info": ("na", "Info")}
+                irows = "".join(f'<tr><td>{_tag(*lvl_tag.get(lvl, ("na", lvl)))}</td><td>{_he(SCAN_LABELS.get(code, code))}</td><td class="num">{n} of {t}</td></tr>'
+                                for code, (lvl, n) in ranked) or '<tr><td colspan="3">No issues found.</td></tr>'
+                worst = [r for r in res if r.get("level") == "error"][:15]
+                prow = "".join(f'<tr><td class="url">{_he(r["url"])}</td><td class="muted">{_he("; ".join(i["msg"] for i in r.get("issues") or [] if i["level"] == "error"))}</td></tr>' for r in worst)
+                body.append(("Site scan", f'<p class="muted">{plural_py(t, "page")} checked as {_he(scan.get("bot_label") or "an AI crawler")} on {_he(sdate)}.</p>'
+                             f'<h3>Issues by type</h3><table><thead><tr><th>Level</th><th>Issue</th><th>Pages</th></tr></thead><tbody>{irows}</tbody></table>'
+                             + (f'<h3>Pages with errors</h3><table><thead><tr><th>Page</th><th>Errors</th></tr></thead><tbody>{prow}</tbody></table>' if worst else "")))
+        else:
+            kpis.append(_kpi("Site scan", "–", "No scan yet"))
+
+    if "cite" in secs:
+        cites = data.get("cites") or []
+        if cites:
+            cite = cites[0]
+            summ = cite.get("summary") or cite_summary(cite)
+            n, sov, top, opps = _cite_insights(cite)
+            score = summ.get("score")
+            metrics["visibility"] = score
+            kpis.append(_kpi("AI visibility", f"{score}/100" if score is not None else "–", f"cited in {_pct(summ['cited'], summ['answers'])} of AI answers",
+                             _delta(score, pm.get("visibility"), pdate), dial=_dial(score, good=50, fair=20)))
+            if summ["answers"] and summ["cited"] / summ["answers"] < 0.3:
+                find("high", "AI assistants rarely cite the site", f"Cited as a source in {summ['cited']} of {summ['answers']} answers to customer questions.",
+                     "Add pages that answer customer questions directly, and get listed on the sites AI cites most.")
+            for h, c in opps[:3]:
+                find("medium", f"Not yet listed on {h}", f"AI assistants cited {h} in {c} answers where this site was not cited.",
+                     f"Get listed, reviewed or mentioned on {h}.")
+            if full:
+                pts = [(c.get("started_at") or "", (c.get("summary") or cite_summary(c)).get("score")) for c in reversed(cites)]
+                pts = [(d, sc) for d, sc in pts if sc is not None]
+                qs = "".join(f"<li>{_he(q)}</li>" for q in cite.get("prompts") or [])
+                srows = "".join(f'<tr><td><strong>{_he(lab)}</strong></td><td class="num">{m} ({_pct(m, n)})</td><td class="num">{c} ({_pct(c, n)})</td></tr>' for lab, m, c in sov)
+                trows = "".join(f'<tr><td>{_he(h)}</td><td class="num">{c} of {n}</td><td>{_he(w)}</td></tr>' for h, c, w in top)
+                body.append(("Visibility in AI answers",
+                             f'<p class="muted">{n} answers from {len(cite.get("models") or [])} AI models with live web search, tested on '
+                             f'{_he((cite.get("started_at") or "")[:10])}. Score: up to 40 points when an answer names the business, up to 40 when it '
+                             'cites the site, up to 20 for positive wording.</p>'
+                             + (f'<h3>Score over time</h3>{_trend_svg(pts)}' if len(pts) >= 2 else "")
+                             + f'<h3>Questions tested</h3><ul>{qs}</ul>'
+                             f'<h3>Share of voice</h3><table><thead><tr><th>Brand</th><th>Named in answers</th><th>Cited as a source</th></tr></thead><tbody>{srows}</tbody></table>'
+                             + (f'<h3>Sources AI cited most</h3><table><thead><tr><th>Website</th><th>Cited in</th><th>Whose site</th></tr></thead><tbody>{trows}</tbody></table>' if top else "")))
+        else:
+            kpis.append(_kpi("AI visibility", "–", "No citation test yet"))
+
+    if "compare" in secs:
+        cmpj = data.get("cmpj")
+        if cmpj:
+            sites = cmpj.get("sites") or []
+            ms = [_cmp_metrics(x) for x in sites]
+            mine, behind = (ms[0] if ms else None), []
+            if mine:
+                for key, label in CMP_ROWS:
+                    if mine[key][1] is None:
+                        continue
+                    better = [(x["host"], m[key][0]) for x, m in zip(sites[1:], ms[1:]) if m and m[key][1] is not None and m[key][1] > mine[key][1]]
+                    if better:
+                        behind.append((key, label, mine[key][0], better))
+            metrics["behind"] = len(behind)
+            kpis.append(_kpi("Competitors", f"Behind on {len(behind)}", f"of {len(CMP_ROWS)} checks, against {plural_py(len(sites) - 1, 'competitor')}",
+                             _delta(len(behind), pm.get("behind"), pdate, higher_better=False)))
+            for key, label, yours, better in behind[:4]:
+                find("medium", f"Competitors are ahead: {label}", f"This site: {yours}. " + "; ".join(f"{h}: {v}" for h, v in better) + ".", CMP_ACTIONS.get(key, ""))
+            if full:
+                head = "".join(f'<th>{"This site: " if x.get("you") else ""}{_he(x["host"])}</th>' for x in sites)
+                rows = ""
+                for key, label in CMP_ROWS:
+                    vals = [m[key][1] for m in ms if m and m[key][1] is not None]
+                    best, worst = (max(vals), min(vals)) if vals else (None, None)
+                    cells = ""
+                    for m in ms:
+                        if not m:
+                            cells += "<td>–</td>"
+                            continue
+                        v = m[key][1]
+                        cls = "" if v is None or best == worst else "best" if v == best else "worst" if v == worst else ""
+                        cells += f'<td class="{cls}">{_he(m[key][0])}</td>'
+                    rows += f'<tr><td class="muted">{_he(label)}</td>{cells}</tr>'
+                body.append(("Competitors", f'<p class="muted">Checked on {_he((cmpj.get("checked_at") or "")[:10])}. Best result per row in green, weakest in red.</p>'
+                             f'<div style="overflow-x:auto"><table><thead><tr><th>Check</th>{head}</tr></thead><tbody>{rows}</tbody></table></div>'))
+        else:
+            kpis.append(_kpi("Competitors", "–", "No comparison yet"))
+
+    if "monitor" in secs and full:
+        runs = (data.get("runs") or [])[:8]
+        if runs:
+            kinds = {"worse": ("bad", "Worse"), "better": ("ok", "Better"), "same": ("na", "Same"), "info": ("na", "Note")}
+            items = ""
+            for r in runs:
+                lis = "".join(f'<tr><td style="width:84px">{_tag(*kinds.get(c["kind"], ("na", c["kind"])))}</td><td>{_he(c["text"])}</td></tr>' for c in r.get("changes") or [])
+                items += f'<h3>{_he(r["at"][:16])}</h3><p class="muted">{_he(r.get("summary") or "")}</p><table><tbody>{lis}</tbody></table>'
+            body.append(("Monitoring history", '<p class="muted">Automatic checks, each compared with the one before it.</p>' + items))
 
     findings.sort(key=lambda f: 0 if f[0] == "high" else 1)
-    find_html = ("".join(f'<li>{_tag("bad" if sev == "high" else "warn", "High" if sev == "high" else "Medium")} <strong>{_he(t)}</strong>'
-                         f'<span class="muted">{_he(d)}</span></li>' for sev, t, d in findings[:14])
-                 or "<li>No significant issues found. Keep monitoring as the site and AI tools change.</li>")
-    notes_html = "".join(f"<p>{_he(p)}</p>" for p in re.split(r"\n\s*\n", notes.strip()) if p.strip())
-    by = _he(agency) + (f" · {_he(contact)}" if contact else "")
-    body = "".join(f"<h2>{_he(t)}</h2>{h}" for t, h in sections)
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow"><title>AI visibility report: {_he(proj['name'])}</title>
+    limit = 12 if full else 6
+    high = sum(1 for f in findings if f[0] == "high")
+    prio = "".join(f'<li><div class="ttl">{_tag("bad" if sev == "high" else "warn", "High" if sev == "high" else "Medium")} {_he(t)}</div>'
+                   + (f'<div class="why">{_he(why)}</div>' if why else "")
+                   + (f'<div class="do"><b>What to do:</b> {_he(act)}</div>' if act else "") + "</li>"
+                   for sev, t, why, act in findings[:limit])
+    prio_html = (f'<p class="muted">{plural_py(len(findings), "item")} found, {high} of them high priority'
+                 + (f"; the {limit} most important are listed here" if len(findings) > limit else "") + ".</p>"
+                 f'<ol class="prio">{prio}</ol>') if findings else '<p>No significant issues found. Keep monitoring as the site and AI tools change.</p>'
+
+    paras = lambda txt: "".join(f"<p>{_he(x)}</p>" for x in re.split(r"\n\s*\n", (txt or "").strip()) if x.strip())
+    logo = logo_data_uri("light")
+    top_mark = f'<img class="brandlogo" src="{logo}" alt="{_he(agency)}">' if logo else f'<div class="agency">{_he(agency)}</div>'
+    contact_html = f'<div>{_he(contact)}</div>' if contact else ""
+    cover = (f'<section class="coverpage"><div>{top_mark}</div>'
+             f'<div class="cv-mid"><div class="cv-rule"></div><h1>{_he(opts["title"])}</h1>'
+             f'<div class="cv-client">{_he(proj["name"])}</div><div class="cv-site">{_he(proj["site"])}</div></div>'
+             f'<div class="cv-foot"><div>Prepared by<strong>{_he(agency)}</strong>{contact_html}</div>'
+             f'<div>Date<strong>{_he(created_label)}</strong></div>'
+             f'<div>Report<strong>{"Full report" if full else "Summary"}</strong></div></div></section>')
+    notes_html = paras(opts.get("notes"))
+    next_html = paras(opts.get("next_steps"))
+    since = f'<p class="muted">Changes are compared with the previous report, from {_he(pdate)}.</p>' if pm else ""
+    details = "".join(f"<h2>{_he(t)}</h2>{h}" for t, h in body)
+    html_doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>{_he(opts['title'])}: {_he(proj['name'])}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..800&family=Instrument+Sans:wght@400..700&display=swap">
 <style>{REPORT_CSS}</style></head><body>
 <div class="bar"><a href="__PDF__">Download PDF</a></div>
 <div class="doc">
-<header class="cover">{(lambda u: f'<img class="brandlogo" src="{u}" alt="{_he(agency)}">' if u else '')(logo_data_uri("light"))}<div class="agency">{by}</div><h1>AI visibility report</h1>
-<div class="client">{_he(proj['name'])}</div><div class="meta">{_he(proj['site'])} · {_he(created_label)}</div></header>
+{cover}
+<h2 style="margin-top:0">Summary</h2>
 {f'<div class="notes">{notes_html}</div>' if notes_html else ''}
-<h2 style="margin-top:8px">At a glance</h2><div class="tiles">{''.join(tiles)}</div>
-<h2>Key findings</h2><ol class="find">{find_html}</ol>
-{body}
-<footer>How this report was made: crawler access and homepage readiness were checked when the report was created; the site scan,
-AI answer test and competitor comparison are the most recent saved runs, on the dates shown. Checks are made from the agency's server
+<h3>At a glance</h3>{since}<div class="kpis">{''.join(kpis)}</div>
+<h2>Top priorities</h2>{prio_html}
+{f'<h2>Next steps</h2><div class="box">{next_html}</div>' if next_html else ''}
+{details}
+<footer>How this report was made: crawler access and page readiness were checked when the report was created; the site scan,
+AI answer test, competitor comparison and monitoring are the most recent saved runs, on the dates shown. Checks are made from the agency's server
 using each crawler's user agent, so they show what crawlers receive today, not what AI tools have stored from earlier visits.
 AI answers vary from run to run.</footer>
 </div></body></html>"""
+    return html_doc, metrics
+
+
+def _report_pages(raw, site):
+    if isinstance(raw, str):
+        raw = raw.split("\n")
+    parts = urllib.parse.urlsplit(site)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    out = []
+    for x in [str(v).strip() for v in (raw or []) if str(v).strip()][:3]:
+        u = origin + x if x.startswith("/") else x
+        u = _normalize_url(u)
+        if _bare_host(u) != _bare_host(site):
+            raise BlockedURL(f"{x} is not on {_bare_host(site)}.")
+        if u not in out:
+            out.append(u)
+    return out or [site]
 
 
 def build_report(p):
@@ -2417,23 +2639,53 @@ def build_report(p):
     if not proj:
         return {"error": "Choose a client project first."}, 400
     site = proj["site"]
+    keys = [k for k, _l in REPORT_SECTIONS]
+    wanted = p.get("sections")
+    secs = [k for k in keys if k in wanted] if isinstance(wanted, list) else keys
+    if not secs:
+        return {"error": "Choose at least one section."}, 400
+    try:
+        pages = _report_pages(p.get("pages"), site)
+    except BlockedURL as e:
+        return {"error": f"Pages to review: {e}"}, 400
+    opts = {"sections": secs, "detail": "summary" if p.get("detail") == "summary" else "full",
+            "title": str(p.get("title") or "").strip()[:100] or "AI visibility report",
+            "notes": str(p.get("notes") or "")[:4000], "next_steps": str(p.get("next_steps") or "")[:4000]}
     st = load_settings()
     agency = (st.get("agency_name") or "").strip() or "Prepared for you"
     contact = (st.get("agency_contact") or "").strip()
-    notes = str(p.get("notes") or "")[:4000]
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fa = ex.submit(check_access, site)
-        fr = ex.submit(_readiness, site)
-        access, acode = fa.result()
-        rres, rcode, _ = fr.result()
+    data = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fa = ex.submit(check_access, site) if "access" in secs else None
+        frs = [ex.submit(_readiness, u) for u in pages] if "readiness" in secs else []
+        if fa:
+            access, acode = fa.result()
+            data["access"] = access if acode == 200 else None
+        data["readies"] = [res for res, code, _t in (f.result() for f in frs) if code == 200]
     key, host = _site_key(site), _bare_host(site)
-    scan = _latest_json(_scan_dir(), lambda j: _site_key(j.get("url", "")) == key and j.get("results"))
-    cite = _latest_json(_cite_dir(), lambda j: _clean_domain(j.get("domain", "")) == host and j.get("results"))
-    cmpj = _latest_json(_cmp_dir(), lambda j: _bare_host(j.get("site", "")) == host)
+    if "scan" in secs:
+        data["scan"] = _latest_json(_scan_dir(), lambda j: _site_key(j.get("url", "")) == key and j.get("results"))
+    if "cite" in secs:
+        cites = []
+        for path in _json_files_newest_first(_cite_dir()):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    j = json.load(f)
+            except Exception:
+                continue
+            if _clean_domain(j.get("domain", "")) == host and j.get("results"):
+                cites.append(j)
+                if len(cites) >= 12:
+                    break
+        data["cites"] = cites
+    if "compare" in secs:
+        data["cmpj"] = _latest_json(_cmp_dir(), lambda j: _bare_host(j.get("site", "")) == host)
+    if "monitor" in secs:
+        data["runs"] = _mon_state(proj["id"]).get("runs") or []
+    prev = next((r for r in list_reports(proj["id"])["reports"] if r.get("metrics")), None)
     tm = time.localtime()
     label = f"{tm.tm_mday} {time.strftime('%B %Y', tm)}"
-    html_doc = render_report(proj, agency, contact, notes, access if acode == 200 else None, rres if rcode == 200 else None,
-                             scan, cite, cmpj, label)
+    html_doc, metrics = render_report(proj, agency, contact, opts, data, prev, label)
     rid = re.sub(r"[^A-Za-z0-9_-]", "", secrets.token_urlsafe(24))[:32]
     html_doc = html_doc.replace("__PDF__", f"/r/{rid}.pdf")
     d = _reports_dir()
@@ -2441,9 +2693,19 @@ def build_report(p):
     with open(os.path.join(d, rid + ".html"), "w", encoding="utf-8") as f:
         f.write(html_doc)
     meta = {"id": rid, "project_id": proj["id"], "name": proj["name"], "site": site, "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "has": {"scan": bool(scan), "cite": bool(cite), "compare": bool(cmpj), "access": acode == 200, "readiness": rcode == 200}}
+            "title": opts["title"], "detail": opts["detail"], "sections": secs, "metrics": metrics,
+            "has": {"scan": bool(data.get("scan")), "cite": bool(data.get("cites")), "compare": bool(data.get("cmpj")),
+                    "access": bool(data.get("access")), "readiness": bool(data.get("readies"))}}
     with open(os.path.join(d, rid + ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f)
+    prefs = {"sections": secs, "detail": opts["detail"], "title": opts["title"], "next_steps": opts["next_steps"],
+             "pages": [str(x).strip() for x in (p.get("pages") if isinstance(p.get("pages"), list) else str(p.get("pages") or "").split("\n")) if str(x).strip()][:3]}
+    with _PROJ_LOCK:
+        items = load_projects()
+        for it in items:
+            if it.get("id") == proj["id"]:
+                it["report_prefs"] = prefs
+        _write_projects(items)
     return meta, 200
 
 
