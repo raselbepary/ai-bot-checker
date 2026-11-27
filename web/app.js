@@ -27,7 +27,7 @@ const post = (path, body) => api(path, {method:'POST', headers:{'Content-Type':'
 /* ---------------------------------------------------------------- routing */
 function currentPage(){
   const m = location.hash.match(/^#\/([a-z]+)/);
-  return m && PAGES[m[1]] ? m[1] : 'bots';
+  return m && PAGES[m[1]] ? m[1] : 'projects';
 }
 function route(){
   const p = currentPage();
