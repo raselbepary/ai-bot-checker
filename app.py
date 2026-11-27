@@ -24,6 +24,8 @@ No extra packages needed: uses only Python's standard library.
 import base64
 import glob
 from html import escape as _he
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 import gzip
 import io
 import hashlib
@@ -35,6 +37,7 @@ import re
 import secrets
 import select
 import shutil
+import smtplib
 import socketserver
 import subprocess
 import tempfile
@@ -2424,6 +2427,410 @@ def report_pdf(rid):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- email (SMTP)
+EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+SMTP_SECURITY = ("starttls", "ssl", "none")
+
+
+def smtp_config():
+    c = load_settings().get("smtp") or {}
+    try:
+        port = int(os.environ.get("SMTP_PORT") or c.get("port") or 587)
+    except ValueError:
+        port = 587
+    sec = os.environ.get("SMTP_SECURITY") or c.get("security") or "starttls"
+    return {"host": os.environ.get("SMTP_HOST") or c.get("host", ""), "port": port,
+            "security": sec if sec in SMTP_SECURITY else "starttls",
+            "user": os.environ.get("SMTP_USER") or c.get("user", ""),
+            "password": os.environ.get("SMTP_PASSWORD") or c.get("password", ""),
+            "from": os.environ.get("SMTP_FROM") or c.get("from", "")}
+
+
+def smtp_public():
+    c = smtp_config()
+    return {"host": c["host"], "port": c["port"], "security": c["security"], "user": c["user"], "from": c["from"],
+            "password_set": bool(c["password"]), "ready": bool(c["host"] and c["from"])}
+
+
+def parse_emails(v):
+    return [x for x in re.split(r"[,;\s]+", str(v or "")) if x and EMAIL_RE.match(x)][:5]
+
+
+def send_email(to_list, subject, text, html_body=None):
+    c = smtp_config()
+    if not (c["host"] and c["from"]):
+        return "Email is not set up. Add your mail server in Settings."
+    if not to_list:
+        return "No valid recipient addresses."
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = c["from"]
+    msg["To"] = ", ".join(to_list)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    msg.set_content(text)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
+    try:
+        ctx = ssl.create_default_context()
+        if c["security"] == "ssl":
+            srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=25, context=ctx)
+        else:
+            srv = smtplib.SMTP(c["host"], c["port"], timeout=25)
+            srv.ehlo()
+            if c["security"] == "starttls":
+                srv.starttls(context=ctx)
+                srv.ehlo()
+        with srv:
+            if c["user"]:
+                srv.login(c["user"], c["password"])
+            srv.send_message(msg)
+        return None
+    except smtplib.SMTPAuthenticationError:
+        return "The mail server rejected the username or password. For Gmail or Google Workspace, use an app password."
+    except (smtplib.SMTPException, OSError, ValueError) as e:
+        return f"Could not send email: {type(e).__name__}: {e}"[:300]
+
+
+# ---------------------------------------------------------------- monitoring
+MON_RUNNING = {}
+MON_FREQ = {"daily": 86400, "weekly": 7 * 86400}
+MON_ID_RE = re.compile(r"^[a-f0-9]{10}$")
+SCAN_ALERT_CODES = {"fetch", "blocked", "http", "robots", "counters", "noindex"}
+
+
+def _mon_file(pid):
+    return os.path.join(DATA_DIR, "monitor", pid + ".json")
+
+
+def _mon_state(pid):
+    try:
+        with open(_mon_file(pid), encoding="utf-8") as f:
+            st = json.load(f)
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mon_write(pid, st):
+    os.makedirs(os.path.dirname(_mon_file(pid)), exist_ok=True)
+    tmp = _mon_file(pid) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f)
+    os.replace(tmp, _mon_file(pid))
+
+
+def monitor_defaults(m):
+    m = dict(m or {})
+    m.setdefault("enabled", False)
+    m.setdefault("frequency", "weekly")
+    m.setdefault("scan", True)
+    m.setdefault("scan_limit", 50)
+    m.setdefault("cite", False)
+    m.setdefault("emails", "")
+    m.setdefault("notify", "changes")
+    m.setdefault("next_run", 0)
+    m.setdefault("last_run", "")
+    m.setdefault("last_summary", "")
+    return m
+
+
+def _update_project_monitor(pid, fn):
+    with _PROJ_LOCK:
+        items = load_projects()
+        for it in items:
+            if it.get("id") == pid:
+                it["monitor"] = fn(monitor_defaults(it.get("monitor")))
+                _write_projects(items)
+                return it
+    return None
+
+
+def save_monitor(p, app_url):
+    pid = str(p.get("project_id", ""))
+    if not storage_writable():
+        return {"error": f"The server cannot write to {DATA_DIR}."}, 500
+    if not any(x.get("id") == pid for x in load_projects()):
+        return {"error": "Choose a client project first."}, 400
+    emails = parse_emails(p.get("emails"))
+    enabled = bool(p.get("enabled"))
+    if enabled and not emails:
+        return {"error": "Add at least one email address for alerts."}, 400
+    freq = p.get("frequency") if p.get("frequency") in MON_FREQ else "weekly"
+    try:
+        limit = int(p.get("scan_limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+
+    def upd(m):
+        start = enabled and (not m["enabled"] or m["frequency"] != freq or not m["next_run"])
+        m.update({"enabled": enabled, "frequency": freq, "scan": bool(p.get("scan", True)), "scan_limit": max(10, min(100, limit)),
+                  "cite": bool(p.get("cite")), "emails": ", ".join(emails), "notify": "always" if p.get("notify") == "always" else "changes"})
+        if start:
+            m["next_run"] = time.time() + 120
+        if not enabled:
+            m["next_run"] = 0
+        return m
+
+    proj = _update_project_monitor(pid, upd)
+    if app_url:
+        save_settings({"app_url": app_url})
+    return {"monitor": proj["monitor"], "smtp_ready": smtp_public()["ready"]}, 200
+
+
+def _wait_job(store_dict, job_id, loader, timeout):
+    end = time.time() + timeout
+    while time.time() < end:
+        j = store_dict.get(job_id)
+        if not j or j.get("status") != "running":
+            return loader(job_id)
+        time.sleep(4)
+    return None
+
+
+def _start_when_free(start_fn, timeout=1800):
+    end = time.time() + timeout
+    while True:
+        res, code = start_fn()
+        if code == 200 or code != 409 or time.time() > end:
+            return res, code
+        time.sleep(30)
+
+
+def diff_snapshots(prev, cur):
+    out = []
+
+    def add(kind, text):
+        out.append({"kind": kind, "text": text})
+
+    if not prev:
+        return [{"kind": "info", "text": "First check: this sets the starting point for future comparisons."}]
+    pa, ca = prev.get("access") or {}, cur.get("access") or {}
+    for tok, v in ca.items():
+        pv = pa.get(tok)
+        if pv == "allowed" and v != "allowed":
+            add("worse", f"{tok} is now blocked ({'by robots.txt' if v == 'blocked_robots' else 'by the server or firewall'}).")
+        elif pv and pv != "allowed" and v == "allowed":
+            add("better", f"{tok} can read the site again.")
+    if "readiness" in cur and "readiness" in prev:
+        d = cur["readiness"] - prev["readiness"]
+        if d <= -10:
+            add("worse", f"Homepage AI readiness dropped from {prev['readiness']} to {cur['readiness']}.")
+        elif d >= 10:
+            add("better", f"Homepage AI readiness rose from {prev['readiness']} to {cur['readiness']}.")
+        for f in sorted(set(cur.get("readiness_fails") or []) - set(prev.get("readiness_fails") or [])):
+            add("worse", f"New homepage problem: {f}.")
+    ps, cs = prev.get("scan"), cur.get("scan")
+    if ps and cs:
+        comparable = abs(cs["pages"] - ps["pages"]) <= max(2, 0.2 * ps["pages"])
+        if not comparable:
+            add("info", f"The scan checked {plural_py(cs['pages'], 'page')} this time and {ps['pages']} last time, so the totals are not compared.")
+        elif cs["errors"] > ps["errors"]:
+            add("worse", f"Pages with errors went from {ps['errors']} to {cs['errors']} (of {cs['pages']} checked).")
+        elif cs["errors"] < ps["errors"]:
+            add("better", f"Pages with errors went down from {ps['errors']} to {cs['errors']}.")
+        for code, n in sorted(cs["codes"].items()):
+            pn = ps["codes"].get(code, 0)
+            if code in SCAN_ALERT_CODES and n > pn:
+                add("worse", f"{SCAN_LABELS.get(code, code)}: now on {plural_py(n, 'page')}, was {pn}.")
+        new_pages = [u for u in cs["error_pages"] if u not in set(ps["error_pages"])]
+        if new_pages:
+            add("worse", "New pages with errors: " + ", ".join(new_pages[:5]) + (f" and {len(new_pages) - 5} more" if len(new_pages) > 5 else "") + ".")
+    pc, cc = prev.get("cite"), cur.get("cite")
+    if pc and cc and pc.get("score") is not None and cc.get("score") is not None:
+        d = cc["score"] - pc["score"]
+        if d <= -10:
+            add("worse", f"AI visibility score dropped from {pc['score']} to {cc['score']}.")
+        elif d >= 10:
+            add("better", f"AI visibility score rose from {pc['score']} to {cc['score']}.")
+    if not out:
+        add("same", "No changes since the last check.")
+    return out
+
+
+def _summary_line(snap):
+    parts = []
+    if snap.get("access"):
+        a = snap["access"]
+        parts.append(f"{sum(1 for v in a.values() if v == 'allowed')} of {len(a)} AI crawlers allowed")
+    if "readiness" in snap:
+        parts.append(f"homepage readiness {snap['readiness']}/100")
+    if snap.get("scan"):
+        s = snap["scan"]
+        parts.append(f"{s['errors']} of {s['pages']} pages with errors")
+    if snap.get("cite") and snap["cite"].get("score") is not None:
+        parts.append(f"AI visibility {snap['cite']['score']}/100")
+    return "; ".join(parts)
+
+
+def _monitor_email(proj, run, app_url):
+    worse = [c["text"] for c in run["changes"] if c["kind"] == "worse"]
+    better = [c["text"] for c in run["changes"] if c["kind"] == "better"]
+    subject = (f"[AI monitor] {proj['name']}: {len(worse)} problem{'s' if len(worse) != 1 else ''} found" if worse
+               else f"[AI monitor] {proj['name']}: no new problems")
+    lines = [f"AI visibility check for {proj['name']} ({proj['site']}), {run['at']}.", ""]
+    if worse:
+        lines += ["What got worse:"] + [f"  - {x}" for x in worse] + [""]
+    if better:
+        lines += ["What improved:"] + [f"  - {x}" for x in better] + [""]
+    if not worse and not better:
+        lines += [run["changes"][0]["text"] if run["changes"] else "No changes.", ""]
+    if run["errors"]:
+        lines += ["Notes:"] + [f"  - {x}" for x in run["errors"]] + [""]
+    lines += [f"Current state: {run['summary']}." if run["summary"] else ""]
+    if app_url:
+        lines += ["", f"Open the tool: {app_url.rstrip('/')}/#/monitor"]
+    li = lambda xs, color: "".join(f'<li style="margin:4px 0;color:{color}">{_he(x)}</li>' for x in xs)
+    html_body = (f'<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:14px;color:#18212b;max-width:620px">'
+                 f'<h2 style="font-size:18px;margin:0 0 4px">{_he(proj["name"])}</h2>'
+                 f'<div style="color:#5e6b78;margin-bottom:14px">{_he(proj["site"])} · checked {_he(run["at"])}</div>'
+                 + (f'<h3 style="font-size:15px;margin:12px 0 4px">What got worse</h3><ul>{li(worse, "#b4261e")}</ul>' if worse else "")
+                 + (f'<h3 style="font-size:15px;margin:12px 0 4px">What improved</h3><ul>{li(better, "#17744a")}</ul>' if better else "")
+                 + ("" if worse or better else f'<p>{_he(run["changes"][0]["text"] if run["changes"] else "No changes.")}</p>')
+                 + (f'<h3 style="font-size:15px;margin:12px 0 4px">Notes</h3><ul>{li(run["errors"], "#5e6b78")}</ul>' if run["errors"] else "")
+                 + (f'<p style="color:#5e6b78">Current state: {_he(run["summary"])}.</p>' if run["summary"] else "")
+                 + (f'<p><a href="{_he(app_url.rstrip("/"))}/#/monitor" style="color:#0b7a6e">Open the tool</a></p>' if app_url else "")
+                 + "</div>")
+    return subject, "\n".join(lines), html_body
+
+
+def run_monitor(pid):
+    proj = next((x for x in load_projects() if x.get("id") == pid), None)
+    if not proj:
+        MON_RUNNING.pop(pid, None)
+        return
+    m = monitor_defaults(proj.get("monitor"))
+    site = proj["site"]
+    t0 = time.time()
+    snap, errors = {}, []
+    try:
+        MON_RUNNING[pid] = "Checking AI crawler access"
+        access, code = check_access(site)
+        if code == 200:
+            snap["access"] = {a["token"]: a["verdict"] for a in access["agents"]}
+        else:
+            errors.append(f"Crawler access could not be checked: {access.get('error', '')}")
+        MON_RUNNING[pid] = "Reviewing the homepage"
+        ready, rcode, _ = _readiness(site)
+        if rcode == 200:
+            snap["readiness"] = ready["score"]
+            snap["readiness_fails"] = [c["label"] for c in ready["checks"] if c["status"] == "fail"]
+        else:
+            errors.append(f"The homepage could not be reviewed: {ready.get('error', '')}")
+        if m["scan"]:
+            MON_RUNNING[pid] = "Scanning the site"
+            res, code = _start_when_free(lambda: start_scan(site, "gptbot", m["scan_limit"]))
+            if code == 200:
+                job = _wait_job(SCANS, res["id"], load_scan, 2700)
+                if job and job.get("results"):
+                    rows = job["results"]
+                    codes = {}
+                    for r in rows:
+                        for c in {i["code"] for i in r.get("issues") or []}:
+                            codes[c] = codes.get(c, 0) + 1
+                    snap["scan"] = {"id": res["id"], "pages": len(rows), "errors": sum(1 for r in rows if r.get("level") == "error"),
+                                    "warnings": sum(1 for r in rows if r.get("level") == "warning"), "codes": codes,
+                                    "error_pages": [r["url"] for r in rows if r.get("level") == "error"][:100]}
+                else:
+                    errors.append("The site scan did not finish" + (f": {job.get('error')}" if job and job.get("error") else "."))
+            else:
+                errors.append(f"The site scan could not start: {res.get('error', '')}")
+        if m["cite"]:
+            models = (load_settings().get("models") or [])[:3]
+            prompts = proj.get("questions") or []
+            if not openrouter_key(None) or not models or not prompts or "." not in _bare_host(site):
+                errors.append("The citation test was skipped: it needs an OpenRouter key and models in Settings, and questions on the project.")
+            else:
+                MON_RUNNING[pid] = "Running the citation test"
+                loc = [x.strip() for x in (proj.get("location") or "").split(",")]
+                payload = {"domain": _bare_host(site), "brands": proj.get("brands") or [], "competitors": proj.get("competitors") or [],
+                           "prompts": prompts, "models": models, "engine": "auto", "sentiment": True,
+                           "location": {"city": loc[0], "region": loc[1] if len(loc) > 1 else "", "country": loc[2] if len(loc) > 2 else ""} if loc[0] else None}
+                res, code = _start_when_free(lambda: start_cite(payload))
+                if code == 200:
+                    job = _wait_job(CITES, res["id"], load_cite, 2700)
+                    if job and job.get("results"):
+                        snap["cite"] = dict(cite_summary(job), id=res["id"])
+                    else:
+                        errors.append("The citation test did not finish.")
+                else:
+                    errors.append(f"The citation test could not start: {res.get('error', '')}")
+    except Exception as e:
+        errors.append(f"Monitoring stopped early: {type(e).__name__}: {e}")
+    st = _mon_state(pid)
+    prev = st.get("snapshot") or {}
+    changes = diff_snapshots(prev, snap)
+    merged = dict(prev)
+    merged.update(snap)
+    run = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "changes": changes, "errors": errors, "summary": _summary_line(merged),
+           "secs": int(time.time() - t0), "email": ""}
+    worse = [c for c in changes if c["kind"] == "worse"]
+    recipients = parse_emails(m["emails"])
+    if recipients and (m["notify"] == "always" or worse):
+        subject, text, html_body = _monitor_email(proj, run, load_settings().get("app_url", ""))
+        err = send_email(recipients, subject, text, html_body)
+        run["email"] = f"Not sent: {err}" if err else f"Sent to {', '.join(recipients)}"
+    elif recipients:
+        run["email"] = "Not sent: nothing got worse"
+    st["snapshot"] = merged
+    st["runs"] = ([run] + (st.get("runs") or []))[:50]
+    _mon_write(pid, st)
+    label = (f"{len(worse)} problem{'s' if len(worse) != 1 else ''}" if worse
+             else "First check" if changes and changes[0]["kind"] == "info" else "No new problems")
+
+    def upd(mm):
+        mm["last_run"] = run["at"]
+        mm["last_summary"] = label
+        if mm["enabled"]:
+            mm["next_run"] = time.time() + MON_FREQ.get(mm["frequency"], MON_FREQ["weekly"])
+        return mm
+
+    _update_project_monitor(pid, upd)
+    MON_RUNNING.pop(pid, None)
+
+
+def _run_monitor_safe(pid):
+    try:
+        run_monitor(pid)
+    except Exception as e:
+        print(f"Monitoring error for {pid}: {type(e).__name__}: {e}", flush=True)
+    finally:
+        MON_RUNNING.pop(pid, None)
+
+
+def _monitor_loop():
+    time.sleep(20)
+    while True:
+        try:
+            now = time.time()
+            for proj in load_projects():
+                m = proj.get("monitor") or {}
+                if m.get("enabled") and m.get("next_run", 0) and m["next_run"] <= now and proj["id"] not in MON_RUNNING:
+                    MON_RUNNING[proj["id"]] = "Starting"
+                    _run_monitor_safe(proj["id"])
+        except Exception as e:
+            print(f"Monitoring loop error: {type(e).__name__}: {e}", flush=True)
+        time.sleep(60)
+
+
+def monitor_overview():
+    out = []
+    for p in load_projects():
+        m = monitor_defaults(p.get("monitor"))
+        out.append({"id": p["id"], "name": p["name"], "site": p["site"], "monitor": m, "running": MON_RUNNING.get(p["id"], "")})
+    return {"projects": out, "smtp": smtp_public(), "now": time.time()}
+
+
+def run_monitor_now(pid):
+    if not any(x.get("id") == pid for x in load_projects()):
+        return {"error": "Choose a client project first."}, 400
+    if pid in MON_RUNNING:
+        return {"error": "A check is already running for this client."}, 409
+    MON_RUNNING[pid] = "Starting"
+    threading.Thread(target=_run_monitor_safe, args=(pid,), daemon=True).start()
+    return {"ok": True}, 200
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -3185,7 +3592,8 @@ def settings_public():
         source, hint = "none", ""
     return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
             "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD),
-            "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", "")}
+            "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", ""),
+            "smtp": smtp_public()}
 
 
 # ---------------------------------------------------------------- sessions
@@ -3429,6 +3837,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/monitor":
+            self._json(monitor_overview())
+        elif path == "/api/monitor/runs":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            pid = (q.get("project") or [""])[0]
+            self._json({"runs": (_mon_state(pid).get("runs") or []) if MON_ID_RE.match(pid) else [], "running": MON_RUNNING.get(pid, "")})
         elif path == "/api/reports":
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             self._json(list_reports((q.get("project") or [""])[0]))
@@ -3495,6 +3909,22 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/monitor/save":
+                host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+                app_url = (f"{'https' if self._secure() else 'http'}://{host}" if host else "")
+                body, code = save_monitor(payload, app_url)
+                return self._json(body, code)
+            if path == "/api/monitor/run":
+                body, code = run_monitor_now(str(payload.get("project_id", "")))
+                return self._json(body, code)
+            if path == "/api/email/test":
+                to = parse_emails(payload.get("to"))
+                if not to:
+                    return self._json({"error": "Enter a valid email address."}, 400)
+                err = send_email(to, "Test email from AI Bot View Checker",
+                                 "This is a test. Monitoring alerts will arrive like this.",
+                                 "<p>This is a test. Monitoring alerts will arrive like this.</p>")
+                return self._json({"error": err} if err else {"ok": True, "to": to}, 502 if err else 200)
             if path == "/api/report":
                 body, code = build_report(payload)
                 return self._json(body, code)
@@ -3563,6 +3993,21 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ("agency_name", "agency_contact"):
                     if k in payload:
                         updates[k] = str(payload.get(k) or "").strip()[:160] or None
+                if isinstance(payload.get("smtp"), dict):
+                    sm, old = payload["smtp"], dict(load_settings().get("smtp") or {})
+                    try:
+                        port = max(1, min(65535, int(sm.get("port") or 587)))
+                    except (TypeError, ValueError):
+                        port = 587
+                    new = {"host": str(sm.get("host") or "").strip()[:200], "port": port,
+                           "security": sm.get("security") if sm.get("security") in SMTP_SECURITY else "starttls",
+                           "user": str(sm.get("user") or "").strip()[:200], "from": str(sm.get("from") or "").strip()[:200],
+                           "password": old.get("password", "")}
+                    if sm.get("clear_password"):
+                        new["password"] = ""
+                    elif sm.get("password"):
+                        new["password"] = str(sm["password"])[:300]
+                    updates["smtp"] = new
                 save_settings(updates)
                 return self._json(settings_public())
         except Exception as e:
@@ -3588,6 +4033,8 @@ def main():
               "Set APP_PASSWORD (recommended) or ALLOW_NO_AUTH=1.", flush=True)
         sys.exit(1)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    if storage_writable():
+        threading.Thread(target=_monitor_loop, daemon=True).start()
     url = f"http://localhost:{PORT}"
     print(f"\n  AI Bot View Checker listening on {HOST}:{PORT}", flush=True)
     print(f"  Login: {'on (user ' + APP_USERNAME + ')' if APP_PASSWORD else 'off'}", flush=True)
