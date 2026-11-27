@@ -1398,7 +1398,7 @@ def save_project(p):
     data = {"name": name, "site": site, "brands": _str_list(p.get("brands"), 10, 80),
             "competitors": _str_list(p.get("competitors"), 10, 120),
             "location": str(p.get("location", "")).strip()[:120],
-            "questions": [x for x in (str(s).strip()[:300] for s in (p.get("questions") or []) if isinstance(s, str)) if x][:10],
+            "questions": [x for x in (str(s).strip()[:300] for s in (p.get("questions") or []) if isinstance(s, str)) if x][:CITE_MAX_QUESTIONS],
             "updated_at": now}
     with _PROJ_LOCK:
         items = load_projects()
@@ -2496,7 +2496,8 @@ def render_report(proj, agency, contact, opts, data, prev, created_label):
             n, sov, top, opps = _cite_insights(cite)
             score = summ.get("score")
             metrics["visibility"] = score
-            kpis.append(_kpi("AI visibility", f"{score}/100" if score is not None else "–", f"cited in {_pct(summ['cited'], summ['answers'])} of AI answers",
+            kpis.append(_kpi("AI visibility", f"{score}/100" if score is not None else "–",
+                             f"named on {summ['named_q']} of {summ['questions']} questions" if summ.get("questions") else f"cited in {_pct(summ['cited'], summ['answers'])} of AI answers",
                              _delta(score, pm.get("visibility"), pdate), dial=_dial(score, good=50, fair=20)))
             if summ["answers"] and summ["cited"] / summ["answers"] < 0.3:
                 find("high", "AI assistants rarely cite the site", f"Cited as a source in {summ['cited']} of {summ['answers']} answers to customer questions.",
@@ -2511,6 +2512,7 @@ def render_report(proj, agency, contact, opts, data, prev, created_label):
                 srows = "".join(f'<tr><td><strong>{_he(lab)}</strong></td><td class="num">{m} ({_pct(m, n)})</td><td class="num">{c} ({_pct(c, n)})</td></tr>' for lab, m, c in sov)
                 trows = "".join(f'<tr><td>{_he(h)}</td><td class="num">{c} of {n}</td><td>{_he(w)}</td></tr>' for h, c, w in top)
                 body.append(("Visibility in AI answers",
+                             _audit_html(cite) +
                              f'<p class="muted">{n} answers from {len(cite.get("models") or [])} AI models with live web search, tested on '
                              f'{_he((cite.get("started_at") or "")[:10])}. Score: up to 40 points when an answer names the business, up to 40 when it '
                              'cites the site, up to 20 for positive wording.</p>'
@@ -3445,6 +3447,226 @@ def render_portal(proj, viewer, preview=False):
 </div></body></html>"""
 
 
+# ---------------------------------------------------------------- AI answer audit: Google AI Overviews, positions
+AIO_ID = "google/ai-overviews"
+try:
+    CITE_MAX_QUESTIONS = max(10, min(1000, int(os.environ.get("CITE_MAX_QUESTIONS") or 200)))
+except ValueError:
+    CITE_MAX_QUESTIONS = 200
+try:
+    CITE_PARALLEL = max(1, min(16, int(os.environ.get("CITE_PARALLEL") or 6)))
+except ValueError:
+    CITE_PARALLEL = 6
+DFS_URL = os.environ.get("DATAFORSEO_URL", "https://api.dataforseo.com").rstrip("/")
+_ENT_SUFFIX_RE = re.compile(r"\b(inc|llc|l\.?p|ltd|limited|corp|corporation|co|company|plc|group|holdings|the|bdc)\b\.?", re.I)
+
+
+def dfs_config():
+    c = load_settings().get("dataforseo") or {}
+    return {"login": os.environ.get("DATAFORSEO_LOGIN") or c.get("login", ""),
+            "password": os.environ.get("DATAFORSEO_PASSWORD") or c.get("password", ""),
+            "location": (c.get("location") or "").strip() or "United States", "language": c.get("language") or "en"}
+
+
+def dfs_public():
+    c = dfs_config()
+    return {"login": c["login"], "password_set": bool(c["password"]), "ready": bool(c["login"] and c["password"]),
+            "location": c["location"]}
+
+
+def helper_model():
+    s = load_settings()
+    return (s.get("helper_model") or "").strip() or (s.get("models") or ["openai/gpt-4o-mini"])[0]
+
+
+def _dfs_request(path, payload=None, timeout=120):
+    c = dfs_config()
+    if not (c["login"] and c["password"]):
+        return None, "DataForSEO is not set up. Add your API login in Settings."
+    auth = base64.b64encode(f'{c["login"]}:{c["password"]}'.encode()).decode()
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(DFS_URL + path, data=data, method="POST" if data else "GET",
+                                 headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        body = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return None, "DataForSEO rejected the API login or password."
+        return None, f"DataForSEO answered HTTP {e.code}."
+    except Exception as e:
+        return None, f"Could not reach DataForSEO: {type(e).__name__}: {e}"[:300]
+    if body.get("status_code") != 20000:
+        return None, f"DataForSEO: {body.get('status_message') or 'request failed'}"[:300]
+    return body, None
+
+
+def _find_key(obj, key, depth=0):
+    if depth > 8:
+        return None
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            r = _find_key(v, key, depth + 1)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_key(v, key, depth + 1)
+            if r is not None:
+                return r
+    return None
+
+
+def dfs_check():
+    body, err = _dfs_request("/v3/appendix/user_data")
+    if err:
+        return {"error": err}, 400
+    return {"ok": True, "balance": _find_key(body, "balance")}, 200
+
+
+def _walk_dicts(obj, depth=0):
+    if depth > 10:
+        return
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk_dicts(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_dicts(v, depth + 1)
+
+
+def ask_aio(prompt, location=None):
+    c = dfs_config()
+    t0 = time.time()
+    task = {"keyword": prompt[:700], "language_code": c["language"], "device": "desktop", "load_async_ai_overview": True,
+            "location_name": (location or c["location"] or "United States").strip()}
+    body, err = _dfs_request("/v3/serp/google/organic/live/advanced", [task], timeout=180)
+    ms = int((time.time() - t0) * 1000)
+    if err:
+        return {"error": err, "ms": ms}
+    t = (body.get("tasks") or [{}])[0] or {}
+    if t.get("status_code") != 20000:
+        return {"error": f"DataForSEO: {t.get('status_message') or 'task failed'}"[:300], "ms": ms}
+    res = (t.get("result") or [{}])[0] or {}
+    aio = next((i for i in (res.get("items") or []) if isinstance(i, dict) and i.get("type") == "ai_overview"), None)
+    if not aio:
+        return {"no_answer": True, "answer": "", "citations": [], "text_links": [], "searches": 1, "ms": ms}
+    text = aio.get("markdown") or ""
+    if not text:
+        parts = []
+        for el in aio.get("items") or []:
+            if isinstance(el, dict):
+                parts += [str(el[k]) for k in ("title", "text") if el.get(k)]
+        text = "\n".join(parts)
+    cites, seen = [], set()
+    for d in _walk_dicts(aio):
+        u = d.get("url")
+        if isinstance(u, str) and u.startswith(("http://", "https://")) and u not in seen:
+            seen.add(u)
+            cites.append({"url": u, "title": str(d.get("title") or d.get("source") or "")[:200]})
+    return {"answer": text[:8000], "citations": cites[:40], "text_links": [], "searches": 1, "tokens": None, "ms": ms}
+
+
+def _ent_key(s):
+    s = str(s or "").lower().replace("&", " and ")
+    s = _ENT_SUFFIX_RE.sub(" ", s)
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def entity_pos(entity, names):
+    keys = [k for k in (_ent_key(n) for n in entity.get("names") or []) if k]
+    stem = (entity.get("domain") or "").split(".")[0]
+    for i, n in enumerate(names or []):
+        k = _ent_key(n)
+        if not k:
+            continue
+        flat = k.replace(" ", "")
+        if any(kk == k or (min(len(kk), len(k)) >= 4 and (kk in k or k in kk)) for kk in keys):
+            return i + 1
+        if len(stem) >= 4 and len(flat) >= 4 and (stem in flat or flat in stem):
+            return i + 1
+    return None
+
+
+def extract_entities(key, model, question, answer):
+    system = "You list the organisations an AI assistant's answer names or recommends. Reply with JSON only."
+    user = (f"Question: {question}\n\nAnswer:\n<<<\n{answer[:7000]}\n>>>\n\n"
+            "List the companies, firms, brands or providers this answer names, in the order they first appear. Use each one's usual "
+            "name (for example 'Golub Capital', not 'Golub Capital BDC Inc.'). Leave out websites that are only cited as sources, "
+            "publications, directories and generic categories. At most 30.\n"
+            'Return only JSON: {"names": ["...", "..."]}')
+    txt, err = or_chat(key, model, system, user, temperature=0, timeout=90)
+    j = extract_json(txt) if not err else None
+    names = j.get("names") if isinstance(j, dict) else j if isinstance(j, list) else None
+    if not isinstance(names, list):
+        return None
+    out, seen = [], set()
+    for n in names:
+        s = re.sub(r"\s+", " ", str(n)).strip()[:80]
+        k = _ent_key(s)
+        if s and k and k not in seen:
+            seen.add(k)
+            out.append(s)
+    return out[:30]
+
+
+def _audit_html(j):
+    """Answer audit block for reports: headline numbers, who AI names instead, and the question-by-engine table."""
+    ok = [r for r in (j.get("results") or []) if not r.get("error") and not r.get("no_answer") and r.get("brand")]
+    if not ok or not any("entities" in r for r in ok):
+        return ""
+    models = j.get("models") or []
+    label = lambda m: "Google AI Overviews" if m == AIO_ID else m
+    brand = {"names": j.get("brands") or [], "domain": j.get("domain", "")}
+    byq = {}
+    for r in ok:
+        byq.setdefault(r["prompt"], []).append(r)
+    named_q = sum(1 for rs in byq.values() if any(x["brand"].get("mentioned") for x in rs))
+    top3_q = sum(1 for rs in byq.values() if any((x["brand"].get("pos") or 99) <= 3 for x in rs))
+    counts = {}
+    for r in ok:
+        for n in r.get("entities") or []:
+            if entity_pos(brand, [n]):
+                continue
+            e = counts.setdefault(_ent_key(n), {"name": n, "qs": set()})
+            e["qs"].add(r["prompt"])
+    top = sorted(counts.values(), key=lambda e: -len(e["qs"]))[:10]
+    inst = "".join(f'<tr><td>{_he(e["name"])}</td><td class="num">{len(e["qs"])}</td></tr>' for e in top)
+    inst += f'<tr><td><strong>{_he(j.get("domain", ""))} (you)</strong></td><td class="num"><strong>{named_q}</strong></td></tr>'
+    eng = "".join(f'<tr><td>{_he(label(m))}</td><td class="num">{sum(1 for r in ok if r["model"] == m and r["brand"].get("mentioned"))} of '
+                  f'{sum(1 for r in ok if r["model"] == m)}</td></tr>' for m in models)
+    idx = {(r["prompt"], r["model"]): r for r in (j.get("results") or [])}
+
+    def cell(r):
+        if not r:
+            return "–"
+        if r.get("error"):
+            return "error"
+        if r.get("no_answer"):
+            return "no answer"
+        b = r.get("brand") or {}
+        if b.get("pos"):
+            return f"#{b['pos']}"
+        return "named" if b.get("mentioned") else "–"
+
+    order = sorted(j.get("prompts") or [], key=lambda q: (min([(idx.get((q, m)) or {}).get("brand", {}).get("pos") or 999 for m in models] or [999]),
+                                                        -sum(1 for m in models if ((idx.get((q, m)) or {}).get("brand") or {}).get("mentioned"))))
+    rows = "".join(f'<tr><td class="num">{i}</td><td>{_he(q)}</td>' + "".join(f'<td class="num">{cell(idx.get((q, m)))}</td>' for m in models) + "</tr>"
+                   for i, q in enumerate(order, 1))
+    head = "".join(f"<th>{_he(label(m))}</th>" for m in models)
+    return (f'<h3>Answer audit</h3><p class="muted">Named on {named_q} of {len(byq)} questions by at least one engine; in a top 3 on {top3_q}; '
+            f'{sum(1 for r in ok if r["brand"].get("mentioned"))} of {len(ok)} answers name the business. A number is where the engine placed the business '
+            'in its answer; a dash means it answered and left the business out.</p>'
+            f'<h3>Who AI names instead</h3><p class="muted">Number of questions where each firm is named on at least one engine.</p>'
+            f'<table><thead><tr><th>Firm</th><th>Questions</th></tr></thead><tbody>{inst}</tbody></table>'
+            f'<h3>Engine by engine</h3><table><thead><tr><th>Engine</th><th>Answers that name the business</th></tr></thead><tbody>{eng}</tbody></table>'
+            f'<h3>All questions</h3><div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Question</th>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -3624,9 +3846,12 @@ def _run_cite(job):
 
     def one(task):
         prompt, model = task
-        r = ask_search(job["key"], model, prompt, job["engine"], job["location"])
+        if model == AIO_ID:
+            r = ask_aio(prompt, job.get("aio_location"))
+        else:
+            r = ask_search(job["key"], model, prompt, job["engine"], job["location"])
         r.update({"prompt": prompt, "model": model})
-        if not r.get("error"):
+        if not r.get("error") and not r.get("no_answer"):
             hosts = []
             for u in [c["url"] for c in r["citations"]] + r["text_links"]:
                 h = _host(u)
@@ -3636,15 +3861,26 @@ def _run_cite(job):
             r["hosts"] = hosts[:40]
             r["brand"] = _entity_in(brand, low, hosts)
             r["competitors"] = [dict(_entity_in(c, low, hosts), label=c["label"], domain=c["domain"]) for c in comps]
-            if job.get("sentiment") and r["brand"]["mentioned"]:
-                r["sentiment"], r["sentiment_reason"] = rate_sentiment(job["key"], model, job["brands"] or [job["domain"]],
-                                                                      job["domain"], r["answer"])
+            if job.get("positions") and job["key"] and r["answer"].strip():
+                names = extract_entities(job["key"], job["helper"], prompt, r["answer"])
+                if names is not None:
+                    r["entities"] = names
+                    r["brand"]["pos"] = entity_pos(brand, names)
+                    if r["brand"]["pos"]:
+                        r["brand"]["mentioned"] = True
+                    for c, cr in zip(comps, r["competitors"]):
+                        cr["pos"] = entity_pos(c, names)
+                        if cr["pos"]:
+                            cr["mentioned"] = True
+            if job.get("sentiment") and r["brand"]["mentioned"] and job["key"]:
+                r["sentiment"], r["sentiment_reason"] = rate_sentiment(job["key"], job["helper"] if model == AIO_ID else model,
+                                                                      job["brands"] or [job["domain"]], job["domain"], r["answer"])
         return r
 
     try:
         tasks = [(p, m) for p in job["prompts"] for m in job["models"]]
         job["total"] = len(tasks)
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=CITE_PARALLEL) as ex:
             futs = {ex.submit(one, t): t for t in tasks}
             for f in as_completed(futs):
                 try:
@@ -3690,15 +3926,20 @@ def _str_list(v, max_items, max_len):
 
 def start_cite(p):
     key = openrouter_key(p.get("key"))
-    if not key:
+    only_aio = [str(m) for m in (p.get("models") or [])] == [AIO_ID] and not p.get("positions", True)
+    if not key and not only_aio:
         return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
     domain = _clean_domain(str(p.get("domain", "")))
     if not domain or "." not in domain:
         return {"error": "Enter your site's domain, like example.com."}, 400
-    prompts = [x for x in (str(s).strip()[:300] for s in (p.get("prompts") or []) if isinstance(s, str)) if x][:10]
+    prompts = list(dict.fromkeys(x for x in (str(s).strip()[:300] for s in (p.get("prompts") or []) if isinstance(s, str)) if x))
+    if len(prompts) > CITE_MAX_QUESTIONS:
+        return {"error": f"Use up to {CITE_MAX_QUESTIONS} questions per test."}, 400
     if not prompts:
         return {"error": "Add at least one question."}, 400
-    models = _str_list(p.get("models"), 6, 200)
+    models = _str_list(p.get("models"), 7, 200)
+    if AIO_ID in models and not dfs_public()["ready"]:
+        return {"error": "Google AI Overviews needs a DataForSEO login. Add it in Settings."}, 400
     if not models:
         return {"error": "Pick at least one model."}, 400
     engine = p.get("engine") if p.get("engine") in SEARCH_ENGINES else "auto"
@@ -3714,7 +3955,9 @@ def start_cite(p):
                "competitors": _str_list(p.get("competitors"), 10, 120), "prompts": prompts, "models": models,
                "engine": engine, "location": location, "status": "running", "total": len(prompts) * len(models),
                "done": 0, "started_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": "", "error": "",
-               "results": [], "stop": False, "key": key, "sentiment": bool(p.get("sentiment", True))}
+               "results": [], "stop": False, "key": key, "sentiment": bool(p.get("sentiment", True)),
+               "positions": bool(p.get("positions", True)), "helper": helper_model(),
+               "aio_location": str(p.get("aio_location") or "").strip()[:120] or None}
         CITES[job["id"]] = job
     threading.Thread(target=_run_cite, args=(job,), daemon=True).start()
     return {"id": job["id"]}, 200
@@ -3785,11 +4028,17 @@ def answer_score(r):
 def cite_summary(job):
     ok = [r for r in (job.get("results") or []) if not r.get("error") and r.get("brand")]
     if not ok:
-        return {"score": None, "answers": 0, "cited": 0, "named": 0, "positive": 0, "negative": 0}
+        return {"score": None, "answers": 0, "cited": 0, "named": 0, "positive": 0, "negative": 0, "questions": 0, "named_q": 0, "top3_q": None}
+    byq = {}
+    for r in ok:
+        byq.setdefault(r.get("prompt"), []).append(r)
+    has_pos = any("entities" in r for r in ok)
     return {"score": round(sum(answer_score(r) for r in ok) / len(ok)), "answers": len(ok),
             "cited": sum(1 for r in ok if r["brand"].get("cited")), "named": sum(1 for r in ok if r["brand"].get("mentioned")),
             "positive": sum(1 for r in ok if r.get("sentiment") == "positive"),
-            "negative": sum(1 for r in ok if r.get("sentiment") == "negative")}
+            "negative": sum(1 for r in ok if r.get("sentiment") == "negative"),
+            "questions": len(byq), "named_q": sum(1 for rs in byq.values() if any(x["brand"].get("mentioned") for x in rs)),
+            "top3_q": sum(1 for rs in byq.values() if any((x["brand"].get("pos") or 99) <= 3 for x in rs)) if has_pos else None}
 
 
 def rate_sentiment(key, model, names, domain, answer):
@@ -3832,7 +4081,7 @@ def suggest_questions(p):
     personas = _str_list(p.get("personas"), 6, 60)
     location = str(p.get("location", "")).strip()[:120]
     try:
-        count = max(4, min(20, int(p.get("count", 12))))
+        count = max(4, min(100, int(p.get("count", 12))))
     except (TypeError, ValueError):
         count = 12
     title, desc, text = _page_excerpt(site, 3500)
@@ -4210,7 +4459,8 @@ def settings_public():
     return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
             "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD),
             "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", ""),
-            "smtp": smtp_public(), "scan_max": SCAN_MAX_PAGES,
+            "smtp": smtp_public(), "scan_max": SCAN_MAX_PAGES, "cite_max": CITE_MAX_QUESTIONS,
+            "dataforseo": dfs_public(), "helper_model": s.get("helper_model", ""),
             "logo": {"light": bool(brand_logo("light")[0]), "dark": bool(brand_logo("dark")[0]), "v": s.get("brand_v", 0)}}
 
 
@@ -4579,6 +4829,9 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/dataforseo/check":
+                body, code = dfs_check()
+                return self._json(body, code)
             if path == "/api/brand/logo-delete":
                 body, code = delete_brand_logo(str(payload.get("variant", "")))
                 return self._json(body, code)
@@ -4693,6 +4946,17 @@ class Handler(BaseHTTPRequestHandler):
                     elif sm.get("password"):
                         new["password"] = str(sm["password"])[:300]
                     updates["smtp"] = new
+                if isinstance(payload.get("dataforseo"), dict):
+                    dp, old = payload["dataforseo"], dict(load_settings().get("dataforseo") or {})
+                    new = {"login": str(dp.get("login") or "").strip()[:200], "location": str(dp.get("location") or "").strip()[:120],
+                           "language": "en", "password": old.get("password", "")}
+                    if dp.get("clear_password"):
+                        new["password"] = ""
+                    elif dp.get("password"):
+                        new["password"] = str(dp["password"])[:300]
+                    updates["dataforseo"] = new
+                if "helper_model" in payload:
+                    updates["helper_model"] = str(payload.get("helper_model") or "").strip()[:200] or None
                 save_settings(updates)
                 return self._json(settings_public())
         except Exception as e:
