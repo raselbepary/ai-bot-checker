@@ -23,7 +23,7 @@ The sidebar is organized the way the work is usually done: pick a client, check 
 
 | Page | What it does |
 |---|---|
-| **Site scan** | Checks up to 200 pages from the sitemap as a chosen bot: blocked pages, errors, animated counters showing 0, noindex, thin pages, missing titles, descriptions and structured data. History and CSV export. |
+| **Site scan** | Checks any number of pages from the sitemap, up to 2,000 per scan by default, as a chosen bot (4 pages at a time, so client servers aren't overloaded): blocked pages, errors, animated counters showing 0, noindex, thin pages, missing titles, descriptions and structured data. History and CSV export. |
 | **AI access** | Tests 17 AI crawlers against robots.txt and live server responses (allowed, blocked by robots.txt, blocked by server), plus a robots.txt builder for AI crawler rules. |
 | **Crawler visits** | Upload a server or Cloudflare log to see which AI crawlers really visited, which pages they read and what they got back. Fake bots are filtered out using the IP lists that OpenAI, Perplexity, Google, Bing, Apple and Mistral publish. The log is analyzed in memory and not stored. |
 | **llms.txt** | Checks `/llms.txt` and `/llms-full.txt` (format and links) and drafts one from the sitemap. |
@@ -87,6 +87,7 @@ The Dockerfile uses `python:3.12-slim-bookworm` (Debian 12) because the browser 
 | `SESSION_DAYS` | `30` | How long a sign-in lasts |
 | `OPENROUTER_API_KEY` | none | Optional server-side OpenRouter key (it can also be saved in Settings) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | none | Optional email settings; override what is saved in Settings. `SMTP_SECURITY` is `starttls`, `ssl` or `none`. |
+| `SCAN_MAX_PAGES` | `2000` | Most pages one site scan may check (up to 10000). Larger scans take longer and use more storage. |
 | `CHROME_PATH` | auto-detected | Path to a Chromium headless shell, if it is not in the default location |
 | `ALLOW_PRIVATE_URLS` | off | `1` allows checking private or internal addresses (local testing only) |
 | `ALLOW_NO_AUTH` | off | `1` allows running publicly without a password (not recommended) |
