@@ -2831,6 +2831,279 @@ def run_monitor_now(pid):
     return {"ok": True}, 200
 
 
+# ---------------------------------------------------------------- client portal
+PORTAL_COOKIE = "abvc_portal"
+PORTAL_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+_PORTAL_LOCK = threading.Lock()
+PORTAL_CSS = REPORT_CSS + """
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 22px;background:#13202b;color:#e8eef2;font-size:14px}
+.top a{color:#e8eef2}
+.top strong{font-weight:650}
+.trend{display:flex;align-items:flex-end;gap:8px;height:120px;border-bottom:1px solid var(--line);margin-top:12px}
+.trend div{flex:1 0 22px;max-width:52px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
+.trend span{display:block;width:100%;background:var(--accent);border-radius:3px 3px 0 0}
+.trend em{font-style:normal;font-size:11.5px;color:var(--muted);margin-bottom:2px}
+.dates{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);margin-top:4px}
+ul.runs{list-style:none;padding:0;margin:8px 0}
+ul.runs li{border-bottom:1px solid var(--line);padding:10px 0}
+ul.runs ul{margin:6px 0 0;padding-left:0;list-style:none} ul.runs ul li{border:0;padding:3px 0}
+.preview{background:#fcf0d5;color:#8a5800;text-align:center;padding:8px;font-size:13px;font-weight:600}
+"""
+
+
+def _portal_file():
+    return os.path.join(DATA_DIR, "portal_users.json")
+
+
+def load_portal_users():
+    try:
+        with open(_portal_file(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _write_portal_users(items):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = _portal_file() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f)
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
+    os.replace(tmp, _portal_file())
+
+
+def _hash_pw(pw, salt_hex):
+    return hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt_hex), 200000).hex()
+
+
+def _new_password():
+    return "-".join(secrets.token_urlsafe(5).replace("_", "x").replace("-", "y") for _ in range(3))
+
+
+def _portal_public(u):
+    return {k: u.get(k) for k in ("id", "project_id", "name", "email", "created_at", "last_login", "disabled")}
+
+
+def portal_users_for(project_id):
+    return {"users": [_portal_public(u) for u in load_portal_users() if u.get("project_id") == project_id]}
+
+
+def _set_password(u, pw):
+    u["salt"] = secrets.token_hex(16)
+    u["hash"] = _hash_pw(pw, u["salt"])
+
+
+def add_portal_user(p):
+    if not storage_writable():
+        return {"error": f"The server cannot write to {DATA_DIR}."}, 500
+    pid = str(p.get("project_id", ""))
+    if not any(x.get("id") == pid for x in load_projects()):
+        return {"error": "Choose a client project first."}, 400
+    email = str(p.get("email", "")).strip().lower()[:200]
+    name = str(p.get("name", "")).strip()[:80] or email
+    if not EMAIL_RE.match(email):
+        return {"error": "Enter a valid email address."}, 400
+    pw = _new_password()
+    with _PORTAL_LOCK:
+        users = load_portal_users()
+        if any(u.get("email") == email for u in users):
+            return {"error": "That email already has a portal login."}, 409
+        u = {"id": secrets.token_hex(6), "project_id": pid, "name": name, "email": email,
+             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "last_login": "", "disabled": False}
+        _set_password(u, pw)
+        users.append(u)
+        _write_portal_users(users)
+    return {"user": _portal_public(u), "password": pw}, 200
+
+
+def update_portal_user(uid, action, value=None):
+    if not PORTAL_ID_RE.match(uid or ""):
+        return {"error": "Login not found."}, 404
+    with _PORTAL_LOCK:
+        users = load_portal_users()
+        u = next((x for x in users if x.get("id") == uid), None)
+        if not u:
+            return {"error": "Login not found."}, 404
+        out = {"ok": True}
+        if action == "reset":
+            pw = _new_password()
+            _set_password(u, pw)
+            out = {"user": _portal_public(u), "password": pw}
+        elif action == "disable":
+            u["disabled"] = bool(value)
+        elif action == "delete":
+            users = [x for x in users if x.get("id") != uid]
+        _write_portal_users(users)
+    return out, 200
+
+
+def _portal_secret():
+    base = os.environ.get("SESSION_SECRET") or APP_PASSWORD or "local"
+    return hashlib.sha256(("abvc-portal|" + base).encode()).digest()
+
+
+def make_portal_session(u):
+    exp = str(int(time.time()) + SESSION_DAYS * 86400)
+    sig = hmac.new(_portal_secret(), f"{u['id']}.{exp}.{u['hash'][:16]}".encode(), hashlib.sha256).hexdigest()
+    return f"{u['id']}.{exp}.{sig}"
+
+
+def portal_user_from_token(token):
+    try:
+        uid, exp, sig = token.split(".", 2)
+        if int(exp) < time.time() or not PORTAL_ID_RE.match(uid):
+            return None
+        u = next((x for x in load_portal_users() if x.get("id") == uid), None)
+        if not u or u.get("disabled"):
+            return None
+        good = hmac.new(_portal_secret(), f"{uid}.{exp}.{u['hash'][:16]}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, good):
+            return None
+        if not any(p.get("id") == u.get("project_id") for p in load_projects()):
+            return None
+        return u
+    except Exception:
+        return None
+
+
+def portal_login(email, pw):
+    email = (email or "").strip().lower()
+    u = next((x for x in load_portal_users() if x.get("email") == email and not x.get("disabled")), None)
+    if not u or not hmac.compare_digest(_hash_pw(pw or "", u["salt"]), u["hash"]):
+        return None
+    if not any(p.get("id") == u.get("project_id") for p in load_projects()):
+        return None
+    with _PORTAL_LOCK:
+        users = load_portal_users()
+        for x in users:
+            if x.get("id") == u["id"]:
+                x["last_login"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _write_portal_users(users)
+    return u
+
+
+def render_portal(proj, viewer, preview=False):
+    host, key = _bare_host(proj["site"]), _site_key(proj["site"])
+    st = load_settings()
+    agency = (st.get("agency_name") or "").strip()
+    contact = (st.get("agency_contact") or "").strip()
+    cites = []
+    for path in _json_files_newest_first(_cite_dir()):
+        try:
+            with open(path, encoding="utf-8") as f:
+                j = json.load(f)
+        except Exception:
+            continue
+        if _clean_domain(j.get("domain", "")) == host and j.get("results"):
+            cites.append(j)
+            if len(cites) >= 12:
+                break
+    scan = _latest_json(_scan_dir(), lambda j: _site_key(j.get("url", "")) == key and j.get("results"))
+    cmpj = _latest_json(_cmp_dir(), lambda j: _bare_host(j.get("site", "")) == host)
+    mon = _mon_state(proj["id"])
+    snap = mon.get("snapshot") or {}
+    runs = (mon.get("runs") or [])[:15]
+    reports = list_reports(proj["id"])["reports"][:20]
+
+    tiles = []
+    if cites:
+        s0 = cites[0].get("summary") or cite_summary(cites[0])
+        sub = f"cited in {_pct(s0['cited'], s0['answers'])} of AI answers"
+        if len(cites) > 1:
+            s1 = cites[1].get("summary") or cite_summary(cites[1])
+            if s0.get("score") is not None and s1.get("score") is not None:
+                d = s0["score"] - s1["score"]
+                sub = f"{'+' if d > 0 else ''}{d} since {(cites[1].get('started_at') or '')[:10]}"
+        sc = s0.get("score")
+        tiles.append(_tile("AI visibility", f"{sc}/100" if sc is not None else "–", sub,
+                           "na" if sc is None else "ok" if sc >= 50 else "warn" if sc >= 20 else "bad"))
+    else:
+        tiles.append(_tile("AI visibility", "–", "Not tested yet", "na"))
+    if "readiness" in snap:
+        r = snap["readiness"]
+        tiles.append(_tile("Homepage AI readiness", f"{r}/100", "from the latest check", "ok" if r >= 75 else "warn" if r >= 50 else "bad"))
+    else:
+        tiles.append(_tile("Homepage AI readiness", "–", "Not checked yet", "na"))
+    if snap.get("access"):
+        a = snap["access"]
+        ok_n = sum(1 for v in a.values() if v == "allowed")
+        tiles.append(_tile("AI crawler access", f"{ok_n} of {len(a)}", "AI crawlers can read the site",
+                           "ok" if ok_n == len(a) else "warn" if ok_n >= len(a) - 2 else "bad"))
+    else:
+        tiles.append(_tile("AI crawler access", "–", "Not checked yet", "na"))
+    if scan:
+        res = scan.get("results") or []
+        e = sum(1 for x in res if x.get("level") == "error")
+        w = sum(1 for x in res if x.get("level") == "warning")
+        tiles.append(_tile("Site scan", f"{e} · {w}", f"pages with errors · warnings, of {len(res)}, {(scan.get('started_at') or '')[:10]}",
+                           "ok" if not e and not w else "warn" if not e else "bad"))
+    else:
+        tiles.append(_tile("Site scan", "–", "Not scanned yet", "na"))
+    if cmpj:
+        sites = cmpj.get("sites") or []
+        ms = [_cmp_metrics(s) for s in sites]
+        behind = 0
+        if ms and ms[0]:
+            for k, _label in CMP_ROWS:
+                if ms[0][k][1] is None:
+                    continue
+                if any(m and m[k][1] is not None and m[k][1] > ms[0][k][1] for m in ms[1:]):
+                    behind += 1
+        tiles.append(_tile("Against competitors", f"Behind on {behind}", f"of {len(CMP_ROWS)} checks, {(cmpj.get('checked_at') or '')[:10]}",
+                           "ok" if not behind else "warn" if behind <= 3 else "bad"))
+
+    scored = [(c.get("started_at") or "", (c.get("summary") or cite_summary(c)).get("score")) for c in reversed(cites)]
+    scored = [(d, s) for d, s in scored if s is not None]
+    trend = ""
+    if len(scored) >= 2:
+        bars = "".join(f'<div title="{_he(d[:10])}: {s}"><em>{s}</em><span style="height:{max(3, s)}%"></span></div>' for d, s in scored)
+        trend = (f'<h2>AI visibility over time</h2><p class="muted">Visibility score from each test of the questions customers ask AI assistants.</p>'
+                 f'<div class="trend">{bars}</div><div class="dates"><span>{_he(scored[0][0][:10])}</span><span>{_he(scored[-1][0][:10])}</span></div>')
+
+    if reports:
+        rows = "".join(f'<tr><td class="num">{_he(r["created_at"][:10])}</td><td><a href="/r/{_he(r["id"])}" target="_blank" rel="noopener">Open report</a></td>'
+                       f'<td><a href="/r/{_he(r["id"])}.pdf">Download PDF</a></td></tr>' for r in reports)
+        reports_html = f'<table><thead><tr><th>Date</th><th></th><th></th></tr></thead><tbody>{rows}</tbody></table>'
+    else:
+        reports_html = '<p class="muted">No reports yet.</p>'
+
+    kinds = {"worse": ("bad", "Worse"), "better": ("ok", "Better"), "same": ("na", "Same"), "info": ("na", "Note")}
+    if runs:
+        items = ""
+        for r in runs:
+            worse = sum(1 for c in r.get("changes") or [] if c["kind"] == "worse")
+            first = bool(r.get("changes")) and r["changes"][0]["text"].startswith("First check")
+            head = _tag("bad" if worse else "na" if first else "ok", f"{worse} problem{'s' if worse != 1 else ''}" if worse else "Starting point" if first else "No new problems")
+            lis = "".join(f'<li>{_tag(*kinds.get(c["kind"], ("na", c["kind"])))} {_he(c["text"])}</li>' for c in r.get("changes") or [])
+            items += f'<li><strong>{_he(r["at"][:16])}</strong> {head}<div class="muted">{_he(r.get("summary") or "")}</div><ul>{lis}</ul></li>'
+        runs_html = f'<ul class="runs">{items}</ul>'
+    else:
+        runs_html = '<p class="muted">Automatic checks have not run yet.</p>'
+
+    by = _he(agency) + (f" · {_he(contact)}" if contact else "")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>{_he(proj['name'])}: AI visibility</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
+<style>{PORTAL_CSS}</style></head><body>
+{'<div class="preview">Preview: this is what the client sees.</div>' if preview else ''}
+<div class="top"><span><strong>{_he(agency or 'AI visibility')}</strong></span><span>{_he(viewer)}{'' if preview else ' · <a href="/portal/logout">Sign out</a>'}</span></div>
+<div class="doc">
+<header class="cover"><div class="agency">{by}</div><h1>AI visibility</h1>
+<div class="client">{_he(proj['name'])}</div><div class="meta">{_he(proj['site'])}</div></header>
+<h2 style="margin-top:8px">At a glance</h2><div class="tiles">{''.join(tiles)}</div>
+{trend}
+<h2>Reports</h2>{reports_html}
+<h2>Monitoring history</h2><p class="muted">Each automatic check is compared with the one before it.</p>{runs_html}
+<footer>Checks show what AI crawlers and assistants receive from the website at the time of each check. AI answers vary from run to run.
+{(' Questions? Contact ' + _he(agency) + (' · ' + _he(contact) if contact else '') + '.') if agency else ''}</footer>
+</div></body></html>"""
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -3810,6 +4083,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, data, "application/pdf", hdrs)
             with open(src, encoding="utf-8") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8", hdrs)
+        if path in ("/portal", "/portal/"):
+            hdrs = {"X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "same-origin"}
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            preview = (q.get("preview") or [""])[0]
+            if preview and self._authorized():
+                proj = next((x for x in load_projects() if x.get("id") == preview), None)
+                if proj:
+                    return self._send(200, render_portal(proj, "Preview", True), "text/html; charset=utf-8", hdrs)
+            user = portal_user_from_token(self._cookie(PORTAL_COOKIE))
+            proj = next((x for x in load_projects() if user and x.get("id") == user.get("project_id")), None)
+            if not user or not proj:
+                return self._redirect("/portal/login")
+            return self._send(200, render_portal(proj, user.get("name") or user.get("email")), "text/html; charset=utf-8", hdrs)
+        if path == "/portal/login":
+            if portal_user_from_token(self._cookie(PORTAL_COOKIE)):
+                return self._redirect("/portal")
+            agency = _he((load_settings().get("agency_name") or "").strip() or "Client portal")
+            page = read_web("portal_login.html").decode("utf-8").replace("__AGENCY__", agency)
+            return self._send(200, page, "text/html; charset=utf-8", {"X-Robots-Tag": "noindex, nofollow"})
+        if path == "/portal/logout":
+            return self._redirect("/portal/login", f"{PORTAL_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         if path == "/logout":
             return self._redirect("/login", f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         if not self._authorized():
@@ -3837,6 +4131,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/portal/users":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            self._json(portal_users_for((q.get("project") or [""])[0]))
         elif path == "/api/monitor":
             self._json(monitor_overview())
         elif path == "/api/monitor/runs":
@@ -3879,6 +4176,18 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json({"error": "Invalid request body"}, 400)
 
+        if path == "/api/portal/login":
+            ip = self._client_ip()
+            if not login_allowed(ip):
+                return self._json({"error": "Too many failed attempts. Try again in 15 minutes."}, 429)
+            user = portal_login(str(payload.get("email", "")), str(payload.get("password", "")))
+            if user:
+                cookie = (f"{PORTAL_COOKIE}={make_portal_session(user)}; Path=/; Max-Age={SESSION_DAYS * 86400}; "
+                          f"HttpOnly; SameSite=Lax" + ("; Secure" if self._secure() else ""))
+                return self._json({"ok": True}, headers={"Set-Cookie": cookie})
+            record_login_fail(ip)
+            time.sleep(0.6)
+            return self._json({"error": "Wrong email or password."}, 401)
         if path == "/api/login":
             if not APP_PASSWORD:
                 return self._json({"ok": True})
@@ -3909,6 +4218,18 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/portal/users/add":
+                body, code = add_portal_user(payload)
+                return self._json(body, code)
+            if path == "/api/portal/users/reset":
+                body, code = update_portal_user(str(payload.get("id", "")), "reset")
+                return self._json(body, code)
+            if path == "/api/portal/users/disable":
+                body, code = update_portal_user(str(payload.get("id", "")), "disable", payload.get("disabled"))
+                return self._json(body, code)
+            if path == "/api/portal/users/delete":
+                body, code = update_portal_user(str(payload.get("id", "")), "delete")
+                return self._json(body, code)
             if path == "/api/monitor/save":
                 host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
                 app_url = (f"{'https' if self._secure() else 'http'}://{host}" if host else "")
