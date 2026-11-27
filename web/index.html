@@ -115,11 +115,25 @@
       <div id="repMain" class="hidden">
         <section class="panel">
           <h2>New report for <span id="repClient"></span></h2>
-          <div class="subhead" style="margin-top:12px">What it will include</div>
-          <ul class="issues" id="repIncludes"></ul>
-          <label class="fld" for="repNotes" style="margin-top:14px">Summary for the client <span class="note" style="margin:0;font-weight:400">optional; appears at the top of the report</span></label>
-          <textarea id="repNotes" rows="4" placeholder="For example: This month we fixed the animated counters and opened the site to AI search crawlers. Next we will work on the service pages."></textarea>
-          <div class="row" style="margin-top:12px">
+          <div class="grid2" style="margin-top:16px">
+            <div>
+              <label class="fld" for="repTitle">Report title</label>
+              <input id="repTitle" type="text" placeholder="AI visibility report">
+              <label class="fld" for="repDetail" style="margin-top:14px">Detail</label>
+              <select id="repDetail"><option value="full">Full report: summary, priorities and all details</option><option value="summary">Summary only: cover, scorecard, priorities and next steps</option></select>
+              <label class="fld" for="repPages" style="margin-top:14px">Pages to review for AI readiness <span class="note" style="margin:0;font-weight:400">one per line, up to 3</span></label>
+              <textarea id="repPages" rows="3" placeholder="https://www.example.com/&#10;/services/&#10;/contact/"></textarea>
+            </div>
+            <div>
+              <div class="fld">Sections</div>
+              <div class="secpick" id="repSections"></div>
+            </div>
+          </div>
+          <label class="fld" for="repNotes" style="margin-top:16px">Summary for the client <span class="note" style="margin:0;font-weight:400">optional; opens the report</span></label>
+          <textarea id="repNotes" rows="3" placeholder="For example: This month we fixed the animated counters and opened the site to AI search crawlers."></textarea>
+          <label class="fld" for="repNext" style="margin-top:14px">Next steps <span class="note" style="margin:0;font-weight:400">optional; your plan for the coming weeks</span></label>
+          <textarea id="repNext" rows="3" placeholder="For example: Publish the new FAQ on the service pages, and get listed on the two directories AI cites most."></textarea>
+          <div class="row" style="margin-top:14px">
             <button id="repBtn">Create report</button>
             <span class="note" style="margin:0" id="repBrandNote"></span>
           </div>
