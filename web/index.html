@@ -20,6 +20,7 @@
     <div class="navlinks">
     <nav aria-label="Clients">
       <a href="#/projects" data-page="projects"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span>Projects</span></a>
+      <a href="#/reports" data-page="reports"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg><span>Reports</span></a>
     </nav>
     <nav aria-label="Site checks">
       <span class="navlabel">Site checks</span>
@@ -98,6 +99,34 @@
         <div class="note" id="projFormNote"></div>
       </section>
       <div id="projList"></div>
+    </div>
+
+    <!-- Reports -->
+    <div class="page hidden" id="page-reports">
+      <header class="pagehead">
+        <h1>Client reports</h1>
+        <p class="lede">One branded report per client: a scorecard, the key findings, and details from crawler access, AI readiness, the site scan, AI answers and competitors. Share it as a private link or download it as a PDF.</p>
+      </header>
+      <div class="empty" id="repEmpty">Choose a client in the sidebar to create a report. <a class="links" href="#/projects">Go to projects</a></div>
+      <div id="repMain" class="hidden">
+        <section class="panel">
+          <h2>New report for <span id="repClient"></span></h2>
+          <div class="subhead" style="margin-top:12px">What it will include</div>
+          <ul class="issues" id="repIncludes"></ul>
+          <label class="fld" for="repNotes" style="margin-top:14px">Summary for the client <span class="note" style="margin:0;font-weight:400">optional; appears at the top of the report</span></label>
+          <textarea id="repNotes" rows="4" placeholder="For example: This month we fixed the animated counters and opened the site to AI search crawlers. Next we will work on the service pages."></textarea>
+          <div class="row" style="margin-top:12px">
+            <button id="repBtn">Create report</button>
+            <span class="note" style="margin:0" id="repBrandNote"></span>
+          </div>
+          <div class="status" id="repStatus"></div>
+        </section>
+        <section class="panel">
+          <h2>Reports for this client</h2>
+          <div class="note" style="margin:4px 0 10px">Anyone with a report link can open it without signing in. Links are long and random, and reports are hidden from search engines. Delete a report to switch its link off.</div>
+          <div class="tablewrap"><table id="repList"></table></div>
+        </section>
+      </div>
     </div>
 
     <!-- Bot view -->
@@ -584,6 +613,15 @@
           <button id="saveModels">Save models</button>
         </div>
         <div class="note" id="modelNote"></div>
+      </section>
+      <section class="panel">
+        <h2>Report branding</h2>
+        <p class="hint">Shown at the top of client reports.</p>
+        <div class="grid2">
+          <div><label class="fld" for="agencyName">Agency name</label><input id="agencyName" type="text" placeholder="Clay Media Solutions"></div>
+          <div><label class="fld" for="agencyContact">Contact line</label><input id="agencyContact" type="text" placeholder="theclaymediasolutions.com · hello@example.com"></div>
+        </div>
+        <div class="row" style="margin-top:12px"><button id="saveBrand">Save branding</button><span class="note" style="margin:0" id="brandNote"></span></div>
       </section>
     </div>
   </main>
