@@ -3,21 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in – AI Bot View Checker</title>
+<title>Sign in – Clay Visibility Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap">
 <style>
-:root{--night:#13202b;--surface:#ffffff;--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--accent:#0b7a6e;--accent-hover:#086257;--accent-ink:#fff;--accent-soft:#e0f1ee;--bad:#b4261e;color-scheme:light}
-@media (prefers-color-scheme: dark){:root{--night:#0b1115;--surface:#161e24;--ink:#e3e9ed;--muted:#94a3af;--line:#27333b;--accent:#3cbfab;--accent-hover:#5ad0bd;--accent-ink:#04221d;--accent-soft:#12332e;--bad:#ff8f86;color-scheme:dark}}
+:root{--night:#13202b;--surface:#ffffff;--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--accent:#c2410c;--accent-hover:#9a3412;--accent-ink:#fff;--accent-soft:#fde9d9;--bad:#b4261e;color-scheme:light}
+@media (prefers-color-scheme: dark){:root{--night:#0b1115;--surface:#161e24;--ink:#e3e9ed;--muted:#94a3af;--line:#27333b;--accent:#ff8a3d;--accent-hover:#ffa463;--accent-ink:#1c0c02;--accent-soft:#3b2112;--bad:#ff8f86;color-scheme:dark}}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;background:var(--night);color:var(--ink);
   font:15px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 main{min-height:100vh;display:grid;place-items:center;padding:24px}
 .wrap{width:100%;max-width:380px}
-.brand{display:flex;align-items:center;gap:10px;color:#e8eef2;font-weight:650;font-size:16px;margin:0 0 18px 4px}
-.mark{width:32px;height:32px;border-radius:9px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center}
-.mark svg{width:19px;height:19px}
+.brand{display:flex;flex-direction:column;gap:8px;color:#e8eef2;font-weight:650;font-size:16px;margin:0 0 18px 4px}
+.brand img{display:block;width:200px;max-width:100%;height:auto}
+.brand.has-logo .co{display:none}
+.brand.has-logo span{font-size:13.5px;color:#9fb0bd;font-weight:600}
 form{background:var(--surface);border-radius:12px;padding:28px}
 h1{font-size:22px;line-height:1.25;margin:0 0 4px;letter-spacing:-.015em;font-weight:650}
 p{color:var(--muted);margin:0 0 18px;font-size:14px}
@@ -35,7 +36,7 @@ button:disabled{opacity:.6;cursor:progress}
 <body>
 <main>
 <div class="wrap">
-  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></span>AI Bot View Checker</div>
+  <div class="brand"><img src="/brand/logo-dark" alt="The Clay Media" onload="this.parentNode.classList.add('has-logo')" onerror="this.remove()"><span><span class="co">Clay </span>Visibility Studio</span></div>
   <form id="f">
     <h1>Sign in</h1>
     <p>See your clients' sites the way AI crawlers and assistants do.</p>
