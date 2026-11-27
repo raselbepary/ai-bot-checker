@@ -91,7 +91,7 @@
             <input id="pLoc" type="text" placeholder="Dallas, Texas, US">
           </div>
           <div>
-            <label class="fld" for="pQuestions">Customer questions <span class="note" style="margin:0;font-weight:400">one per line, up to 10; used by AI citations</span></label>
+            <label class="fld" for="pQuestions">Customer questions <span class="note" style="margin:0;font-weight:400">one per line; used by AI citations</span></label>
             <textarea id="pQuestions" rows="12" placeholder="Best HVAC company in Dallas&#10;Who installs heat pumps near Plano, TX?"></textarea>
           </div>
         </div>
@@ -587,7 +587,7 @@
             <input id="citeComp" type="text" placeholder="Rival HVAC (rivalhvac.com), otherbrand.com">
           </div>
           <div>
-            <label class="fld" for="citePrompts">Questions <span class="note" style="margin:0;font-weight:400">one per line, up to 10, written the way a customer would ask</span></label>
+            <label class="fld" for="citePrompts">Questions <span class="note" style="margin:0;font-weight:400">one per line, written the way a customer would ask</span> <span class="note" style="margin:0;font-weight:400" id="citeCount"></span></label>
             <textarea id="citePrompts" rows="7" placeholder="Best HVAC company in Dallas&#10;Who installs heat pumps near Plano, TX?&#10;Is a heat pump worth it in North Texas?"></textarea>
             <div class="links"><a id="qOpen">Suggest questions with AI</a></div>
           </div>
@@ -597,7 +597,7 @@
           <div class="note" style="margin:0 0 10px">Reads the site and drafts questions real customers might ask an AI assistant. They leave out the brand name, so a test shows whether AI recommends the business on its own.</div>
           <div class="row">
             <input id="qPersonas" type="text" placeholder="Customer types, optional: homeowner, property manager, small business owner" style="flex:1;min-width:220px" aria-label="Customer types">
-            <select id="qCount" style="width:auto" aria-label="Number of ideas"><option>8</option><option selected>12</option><option>16</option><option>20</option></select>
+            <select id="qCount" style="width:auto" aria-label="Number of ideas"><option>8</option><option selected>12</option><option>20</option><option>50</option><option>100</option></select>
             <button id="qGen">Generate ideas</button>
           </div>
           <div class="status" id="qStatus"></div>
@@ -606,7 +606,7 @@
         </div>
         <div class="grid2" style="margin-top:14px">
           <div>
-            <div class="fld">Models <a class="links" href="#/settings" style="font-weight:400">Edit list</a> <span class="note" style="margin:0;font-weight:400">up to 6</span></div>
+            <div class="fld">Models <a class="links" href="#/settings" style="font-weight:400">Edit list</a> <span class="note" style="margin:0;font-weight:400">up to 6, plus Google AI Overviews</span></div>
             <div class="modelpick" id="citeModels"></div>
           </div>
           <div>
@@ -622,6 +622,7 @@
             <label class="fld" for="citeLocation" style="margin-top:12px">Searcher location <span class="note" style="margin:0;font-weight:400">optional: City, Region, Country code; native search only</span></label>
             <input id="citeLocation" type="text" placeholder="Dallas, Texas, US">
             <label class="inline-check"><input type="checkbox" id="citeSentiment" checked> Rate how answers describe your brand (one extra short call per answer that names you)</label>
+            <label class="inline-check"><input type="checkbox" id="citePositions" checked> Find where each answer places you and who AI names instead (one extra short call per answer)</label>
           </div>
         </div>
         <div class="row" style="margin-top:16px">
@@ -642,12 +643,32 @@
           <div class="subhead">Share of voice</div>
           <div class="tablewrap"><table id="citeSov"></table></div>
         </section>
+        <section class="panel hidden" id="citeAuditPanel">
+          <h2>Answer audit</h2>
+          <div class="note" style="margin:4px 0 14px">Positions come from the order in which each answer names firms.</div>
+          <div class="auditkpis" id="citeAuditKpis"></div>
+          <div class="grid2" style="margin-top:10px">
+            <div>
+              <div class="subhead">Who AI names instead</div>
+              <div class="note" style="margin:0 0 10px">Number of questions where each firm is named on at least one engine.</div>
+              <div class="barlist" id="citeInstead"></div>
+            </div>
+            <div>
+              <div class="subhead">Engine by engine</div>
+              <div class="note" style="margin:0 0 10px">Answers on each engine that name you.</div>
+              <div class="barlist" id="citeByEngine"></div>
+              <div class="subhead">Your competitors</div>
+              <div class="note" style="margin:0 0 10px">Answers that name each firm.</div>
+              <div class="barlist" id="citePeers"></div>
+            </div>
+          </div>
+        </section>
         <section class="panel">
           <div class="row" style="justify-content:space-between">
             <h2 style="margin:0">Results by question and model</h2>
             <button class="ghost" id="citeCsv">Download CSV</button>
           </div>
-          <div class="note" style="margin:4px 0 10px">Cited #N means your site was the Nth source. Click a result to read the answer.</div>
+          <div class="note" style="margin:4px 0 10px">#N is where the answer placed you among the firms it names; “cited” means your site was one of its sources. Click a result to read the answer.</div>
           <div class="tablewrap"><table id="citeMatrix"></table></div>
         </section>
         <section class="panel">
@@ -694,6 +715,23 @@
           <button id="saveModels">Save models</button>
         </div>
         <div class="note" id="modelNote"></div>
+      </section>
+      <section class="panel">
+        <h2>Google AI Overviews (DataForSEO)</h2>
+        <p class="hint">Lets AI citations include Google's AI Overviews, taken from real Google results through your DataForSEO account (about half a cent per question). The password is kept on the server and never shown again.</p>
+        <div class="grid2">
+          <div>
+            <label class="fld" for="dfsLogin">API login</label><input id="dfsLogin" type="text" placeholder="you@agency.com" autocomplete="off">
+            <label class="fld" for="dfsPass" style="margin-top:12px">API password</label><input id="dfsPass" type="password" autocomplete="new-password">
+          </div>
+          <div>
+            <label class="fld" for="dfsLoc">Google location</label><input id="dfsLoc" type="text" placeholder="United States">
+            <div class="note">A country, or a DataForSEO location such as Dallas,Texas,United States.</div>
+            <label class="fld" for="helperModel" style="margin-top:12px">Helper model <span class="note" style="margin:0;font-weight:400">finds positions and rates wording</span></label>
+            <input id="helperModel" type="text" placeholder="The first model in your list">
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px"><button id="saveDfs">Save</button><button class="ghost" id="testDfs">Check connection</button><span class="note" style="margin:0" id="dfsNote"></span></div>
       </section>
       <section class="panel">
         <h2>Email for monitoring alerts</h2>
