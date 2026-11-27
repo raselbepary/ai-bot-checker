@@ -930,11 +930,12 @@ async function loadProjects(){
 }
 
 function activeProject(){ return PROJECTS.find(p => p.id === $('#projectSel').value) || null; }
+function initialOf(name){ return (String(name || '').trim()[0] || '?').toUpperCase(); }
 function renderCtx(){
   const el = $('#ctx'); if (!el) return;
   const p = activeProject();
   el.innerHTML = p
-    ? `<span class="ctx-dot" aria-hidden="true"></span><span>Working on <strong>${esc(p.name)}</strong></span><span class="ctx-site">${esc(hostOf(p.site) || p.site)}</span><a class="links" href="#/projects">Change</a>`
+    ? `<span class="avatar" aria-hidden="true">${esc(initialOf(p.name))}</span><span>Working on <strong>${esc(p.name)}</strong></span><span class="ctx-site">${esc(hostOf(p.site) || p.site)}</span><a class="links" href="#/projects">Change</a>`
     : `<span>No client selected.</span><a class="links" href="#/projects">Choose a project</a>`;
   if (location.hash === '#/reports') renderReportsPage();
   if (location.hash === '#/monitor') renderMonitorPage();
@@ -1048,7 +1049,7 @@ function renderProjects(){
       ? `<div class="chips">${c.score !== null && c.score !== undefined ? `<span class="chip ${c.score >= 50 ? 'ok' : c.score >= 20 ? 'warn' : 'bad'}">Score ${c.score}</span>` : ''}<span class="chip ${c.cited ? 'ok' : 'bad'}">Cited ${pct(c.cited, c.answers)}</span><span class="chip ${c.named ? 'ok' : 'warn'}">Named ${pct(c.named, c.answers)}</span><span class="chip na">${plural(c.answers, 'answer')}</span></div><span class="note" style="margin:0">${esc((c.started_at || '').slice(0, 16))}</span>`
       : '<span class="note" style="margin:0">No test yet</span>';
     return `<article class="projcard ${p.id === active ? 'active' : ''}">
-      <header><h3>${esc(p.name)}</h3><span class="sub">${esc(p.site)}</span></header>
+      <header><span class="avatar lg" aria-hidden="true">${esc(initialOf(p.name))}</span><div><h3>${esc(p.name)}</h3><span class="sub">${esc(p.site)}</span></div></header>
       <dl class="kv">
         <dt>Site scan</dt><dd>${scanHtml}</dd>
         <dt>AI citations</dt><dd>${citeHtml}</dd>
@@ -1854,13 +1855,15 @@ function renderLogos(s){
 function refreshSidebarLogo(v){
   const a = $('.nav .brand');
   a.classList.remove('has-logo');
-  const old = $('#brandLogo'); if (old) old.remove();
-  const img = document.createElement('img');
-  img.id = 'brandLogo'; img.alt = 'The Clay Media';
+  const old = $('#brandPic'); if (old) old.remove();
+  const pic = document.createElement('picture');
+  pic.id = 'brandPic';
+  pic.innerHTML = `<source srcset="/brand/logo-dark?v=${v}" media="(prefers-color-scheme: dark)"><img id="brandLogo" alt="The Clay Media">`;
+  const img = pic.querySelector('img');
   img.onload = () => a.classList.add('has-logo');
-  img.onerror = () => img.remove();
-  img.src = '/brand/logo-dark?v=' + v;
-  a.prepend(img);
+  img.onerror = () => pic.remove();
+  img.src = '/brand/logo-light?v=' + v;
+  a.prepend(pic);
 }
 async function uploadLogo(variant, input){
   const f = input.files[0]; if (!f) return;
