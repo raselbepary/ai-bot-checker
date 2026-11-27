@@ -2641,7 +2641,7 @@ def save_monitor(p, app_url):
 
     def upd(m):
         start = enabled and (not m["enabled"] or m["frequency"] != freq or not m["next_run"])
-        m.update({"enabled": enabled, "frequency": freq, "scan": bool(p.get("scan", True)), "scan_limit": max(10, min(100, limit)),
+        m.update({"enabled": enabled, "frequency": freq, "scan": bool(p.get("scan", True)), "scan_limit": max(10, min(500, SCAN_MAX_PAGES, limit)),
                   "cite": bool(p.get("cite")), "emails": ", ".join(emails), "notify": "always" if p.get("notify") == "always" else "changes"})
         if start:
             m["next_run"] = time.time() + 120
@@ -3641,7 +3641,10 @@ def outreach_brief(p):
 # ---------------------------------------------------------------- site scan
 SCANS = {}
 _SCAN_LOCK = threading.Lock()
-SCAN_MAX_PAGES = 200
+try:
+    SCAN_MAX_PAGES = max(1, min(10000, int(os.environ.get("SCAN_MAX_PAGES") or 2000)))
+except ValueError:
+    SCAN_MAX_PAGES = 2000
 SCAN_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 SKIP_EXT_RE = re.compile(r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|zip|gz|rar|mp4|mp3|webm|mov|css|js|json|xml|txt|csv|docx?|xlsx?|pptx?)$", re.I)
 LOC_RE = re.compile(r"<loc>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</loc>", re.I | re.S)
@@ -3681,7 +3684,7 @@ def discover_urls(start_url, limit):
                     queue = [cand]
                     break
     urls, seen, used = [], set(), []
-    while queue and len(seen) < 40 and len(urls) < SCAN_MAX_PAGES * 5:
+    while queue and len(seen) < 200 and len(urls) < SCAN_MAX_PAGES * 5:
         sm = queue.pop(0)
         if sm in seen:
             continue
@@ -3944,7 +3947,7 @@ def settings_public():
     return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
             "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD),
             "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", ""),
-            "smtp": smtp_public(),
+            "smtp": smtp_public(), "scan_max": SCAN_MAX_PAGES,
             "logo": {"light": bool(brand_logo("light")[0]), "dark": bool(brand_logo("dark")[0]), "v": s.get("brand_v", 0)}}
 
 
@@ -4206,6 +4209,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/scan/status":
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             job = load_scan((q.get("id") or [""])[0])
+            try:
+                since = max(0, int((q.get("since") or ["0"])[0]))
+            except ValueError:
+                since = 0
+            if job and since:
+                job = dict(job, results=(job.get("results") or [])[since:], results_from=since)
             self._json(job if job else {"error": "Scan not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/scan/list":
             self._json(list_scans())
