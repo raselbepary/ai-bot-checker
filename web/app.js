@@ -73,6 +73,7 @@ function applySettings(s){
   if (sm.security) $('#smtpSec').value = sm.security;
   $('#smtpPass').placeholder = sm.password_set ? 'Saved (leave empty to keep it)' : '';
   renderLogos(s);
+  scanEstimate();
 }
 function renderModelPicks(){
   $('#modelPick').innerHTML = currentModels().map((m, i) =>
@@ -417,11 +418,13 @@ $('#scanCsv').onclick = downloadCsv;
 async function startScan(){
   const url = $('#scanUrl').value.trim();
   if (!url){ $('#scanStatus').textContent = 'Enter a site or sitemap URL.'; return; }
+  const limit = Math.round(Number($('#scanLimit').value));
+  if (!(limit >= 1 && limit <= scanMax())){ $('#scanStatus').textContent = `Choose between 1 and ${scanMax().toLocaleString()} pages.`; return; }
   store('abvc_scan_url', url);
   $('#scanBtn').disabled = true;
   $('#scanStatus').textContent = 'Starting…';
   try{
-    const d = await post('/api/scan/start', {url, bot: $('#scanBot').value, limit: Number($('#scanLimit').value)});
+    const d = await post('/api/scan/start', {url, bot: $('#scanBot').value, limit});
     if (d.error){ $('#scanStatus').textContent = d.error; $('#scanBtn').disabled = false; return; }
     scanLevel = 'all'; scanCode = ''; $('#scanFilter').value = '';
     $$('#scanLevels button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.level === 'all')));
@@ -433,12 +436,18 @@ async function pollScan(id){
   clearTimeout(scanTimer);
   const gen = SCAN_GEN;
   try{
-    const d = await api('/api/scan/status?id=' + encodeURIComponent(id));
+    const have = SCAN && SCAN.id === id && SCAN.status === 'running' ? SCAN.results.length : 0;
+    const d = await api('/api/scan/status?id=' + encodeURIComponent(id) + (have ? '&since=' + have : ''));
     if (gen !== SCAN_GEN) return;
     if (d.error){ $('#scanStatus').textContent = d.error; $('#scanBtn').disabled = false; return; }
+    if (d.results_from){
+      if (!SCAN || SCAN.id !== id || d.results_from !== SCAN.results.length){ scanTimer = setTimeout(() => { SCAN = null; pollScan(id); }, 200); return; }
+      d.results = SCAN.results.concat(d.results);
+      delete d.results_from;
+    }
     SCAN = d; store('abvc_scan', id);
     renderScan();
-    if (d.status === 'running') scanTimer = setTimeout(() => pollScan(id), 1500);
+    if (d.status === 'running') scanTimer = setTimeout(() => pollScan(id), d.total > 1000 ? 5000 : d.total > 300 ? 3000 : 1500);
     else loadScanHistory();
   }catch(e){
     $('#scanStatus').textContent = 'Lost contact with the scan, retrying… (' + e.message + ')';
@@ -1877,6 +1886,22 @@ $('#logoDark').onchange = () => uploadLogo('dark', $('#logoDark'));
 $('#rmLight').onclick = () => removeLogo('light');
 $('#rmDark').onclick = () => removeLogo('dark');
 
+/* ---------------------------------------------------------------- site scan size */
+function scanMax(){ return (SETTINGS && SETTINGS.scan_max) || 2000; }
+function scanEstimate(){
+  const max = scanMax();
+  $('#scanLimit').max = String(max);
+  const n = Math.round(Number($('#scanLimit').value) || 0);
+  let t = `Checks up to ${max.toLocaleString()} pages, 4 at a time, so the site's server isn't overloaded.`;
+  if (n > max || n < 1) t = `Choose between 1 and ${max.toLocaleString()} pages.`;
+  else if (n > 200){
+    const lo = Math.max(2, Math.round(n * 0.4 / 60)), hi = Math.max(lo + 1, Math.round(n * 0.9 / 60));
+    t = `A ${n.toLocaleString()}-page scan takes about ${lo} to ${hi} minutes. You can leave this page; the scan keeps running.`;
+  }
+  $('#scanEst').textContent = t;
+}
+$('#scanLimit').addEventListener('input', () => { store('abvc_scan_limit', $('#scanLimit').value); scanEstimate(); });
+
 /* ---------------------------------------------------------------- start */
 async function init(){
   route();
@@ -1904,6 +1929,7 @@ async function init(){
   $('#llmsUrl').value = load('abvc_llms_url') || lastUrl;
   $('#readyUrl').value = load('abvc_ready_url') || lastUrl;
   $('#jsgapUrl').value = load('abvc_jsgap_url') || lastUrl;
+  if (load('abvc_scan_limit')) $('#scanLimit').value = load('abvc_scan_limit');
   $('#cmpSite').value = load('abvc_cmp_site') || lastUrl;
   $('#cmpComps').value = load('abvc_cmp_comps') || '';
   try{
