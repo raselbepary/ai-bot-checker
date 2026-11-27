@@ -1,4 +1,6 @@
-# AI Bot View Checker
+# Clay Visibility Studio
+
+By The Clay Media.
 
 A self-hosted tool for agencies to check how AI crawlers and AI assistants see client websites: what bots receive, what they miss, whether the site is cited in AI answers, and what to fix. Includes client projects, branded reports and scheduled monitoring with email alerts.
 
@@ -45,7 +47,7 @@ The sidebar is organized the way the work is usually done: pick a client, check 
 
 ### Settings
 
-OpenRouter API key and model list, email (SMTP) for monitoring alerts, and agency branding for reports.
+OpenRouter API key and model list, email (SMTP) for monitoring alerts, and agency branding (name, contact line, and logos for light and dark backgrounds) shown in the sidebar, sign-in pages, reports, the client portal and alert emails.
 
 ## Suggested routine for a new client
 
@@ -100,6 +102,7 @@ The Dockerfile uses `python:3.12-slim-bookworm` (Debian 12) because the browser 
 | `compares/` | Competitor comparisons (last 50) |
 | `reports/` | Client reports and their PDFs |
 | `monitor/` | Monitoring history per client |
+| `brand/` | Uploaded logos (served publicly at `/brand/logo-light` and `/brand/logo-dark` for sign-in pages and emails) |
 | `portal_users.json` | Client portal logins (passwords stored only as salted PBKDF2 hashes; owner-only permissions) |
 
 Uploaded server logs are never saved.
