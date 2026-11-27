@@ -15,6 +15,7 @@ The sidebar is organized the way the work is usually done: pick a client, check 
 | **Projects** | Save each client once: website, brand names, competitors, location and customer questions. Choosing a client in the sidebar fills in every page and shows only that client's results. |
 | **Reports** | Branded client report with a scorecard, key findings and detailed sections. Shared as a private link (no sign-in needed, hidden from search engines) or downloaded as a PDF. |
 | **Monitoring** | Re-checks clients daily or weekly and emails you when something gets worse: a crawler becomes blocked, pages start failing, or the readiness or visibility score drops. |
+| **Client portal** | On the Reports page: give a client their own sign-in at `/portal` to view their scores, visibility trend, reports and monitoring history. View only; clients can't run checks or see other clients. |
 
 ### Site checks (whole site)
 
@@ -99,6 +100,7 @@ The Dockerfile uses `python:3.12-slim-bookworm` (Debian 12) because the browser 
 | `compares/` | Competitor comparisons (last 50) |
 | `reports/` | Client reports and their PDFs |
 | `monitor/` | Monitoring history per client |
+| `portal_users.json` | Client portal logins (passwords stored only as salted PBKDF2 hashes; owner-only permissions) |
 
 Uploaded server logs are never saved.
 
@@ -108,7 +110,8 @@ Only features that call AI models use OpenRouter credits: AI test, AI citations 
 
 ## Safety
 
-- Every page and API call requires sign-in (signed, HttpOnly session cookie), except `/health`, `/login` and report share links. Ten failed sign-ins from one address block sign-in for 15 minutes.
+- Every page and API call requires sign-in (signed, HttpOnly session cookie), except `/health`, `/login`, report share links and the client portal. Ten failed sign-ins from one address block sign-in for 15 minutes.
+- Client portal sessions are separate from the agency sign-in and only open that client's portal page. Creating a new password or disabling a login signs that client out everywhere.
 - Report share links use long random addresses, send `noindex`, and stop working when the report is deleted.
 - The OpenRouter key and email password are stored on the server only and never sent back to the browser.
 - Addresses that resolve to private, loopback, link-local or reserved networks are refused, including after redirects. The headless browser is routed through a built-in filter that applies the same rule to every image, script and file it loads.
