@@ -6,13 +6,13 @@
 <title>Clay Visibility Studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..800&family=Instrument+Sans:wght@400..700&display=swap">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <div class="shell">
   <aside class="nav">
-    <a class="brand" href="#/projects"><img id="brandLogo" src="/brand/logo-dark" alt="The Clay Media" onload="this.parentNode.classList.add('has-logo')" onerror="this.remove()"><span class="appname"><span class="co">Clay </span>Visibility Studio</span></a>
+    <a class="brand" href="#/projects"><picture id="brandPic"><source srcset="/brand/logo-dark" media="(prefers-color-scheme: dark)"><img id="brandLogo" src="/brand/logo-light" alt="The Clay Media" onload="this.closest('.brand').classList.add('has-logo')" onerror="this.closest('picture').remove()"></picture><span class="appname"><span class="co">Clay </span>Visibility Studio</span></a>
     <div class="projpick">
       <label for="projectSel">Client</label>
       <select id="projectSel"><option value="">No project</option></select>
