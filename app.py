@@ -23,6 +23,7 @@ No extra packages needed: uses only Python's standard library.
 """
 import base64
 import glob
+from html import escape as _he
 import gzip
 import io
 import hashlib
@@ -2048,6 +2049,381 @@ def load_compare(cid):
         return None
 
 
+# ---------------------------------------------------------------- client reports
+REPORT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{24,64}$")
+SCAN_LABELS = {"fetch": "Page could not be fetched", "blocked": "Bot challenge page instead of content", "http": "HTTP error",
+               "robots": "Blocked by robots.txt", "counters": "Animated counters show their starting value",
+               "noindex": "Marked noindex", "thin": "Little readable text without JavaScript", "title": "No page title",
+               "description": "No meta description", "schema": "No structured data", "schema_errors": "Structured data errors",
+               "redirect": "Redirects"}
+STAT_TAG = {"pass": ("ok", "Good"), "warn": ("warn", "Improve"), "fail": ("bad", "Fix")}
+CMP_ROWS = [("access", "AI crawlers allowed (of 5 main AI bots)"), ("score", "AI readiness score"),
+            ("words", "Words readable without JavaScript"), ("opening", "Opening paragraph"), ("schema", "Structured data"),
+            ("schemaErr", "Structured data errors"), ("counters", "Animated counters"), ("dated", "Shows a publish or update date"),
+            ("llms", "llms.txt"), ("sitemap", "Sitemap listed in robots.txt")]
+REPORT_CSS = """
+:root{--ink:#18212b;--muted:#5e6b78;--line:#dce2e0;--soft:#f3f5f4;--accent:#0b7a6e;--ok:#17744a;--ok-bg:#e2f3e9;--bad:#b4261e;--bad-bg:#fbe7e5;--warn:#8a5800;--warn-bg:#fcf0d5;--na:#eef1f1}
+*{box-sizing:border-box}
+body{margin:0;background:#e9edec;color:var(--ink);font:14px/1.55 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.bar{position:sticky;top:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 16px;background:#13202b}
+.bar a{color:#fff;background:var(--accent);text-decoration:none;font-weight:600;padding:7px 14px;border-radius:7px;font-size:14px}
+.doc{max-width:900px;margin:24px auto;background:#fff;padding:44px 52px;border-radius:10px}
+header.cover{border-bottom:2px solid var(--ink);padding-bottom:22px;margin-bottom:26px}
+.agency{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.01em}
+h1{font-size:30px;line-height:1.15;margin:14px 0 6px;letter-spacing:-.02em}
+.client{font-size:18px;font-weight:600}
+.meta{color:var(--muted);font-size:13.5px;margin-top:4px}
+h2{font-size:19px;margin:34px 0 8px;letter-spacing:-.01em;break-after:avoid}
+h3{font-size:15px;margin:20px 0 6px;break-after:avoid}
+p{margin:6px 0}
+.muted{color:var(--muted);font-size:13px}
+.notes{background:var(--soft);border-left:3px solid var(--accent);padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:6px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}
+.tile{border:1px solid var(--line);border-radius:9px;padding:12px 14px;break-inside:avoid;border-top-width:4px}
+.tile.ok{border-top-color:var(--ok)} .tile.warn{border-top-color:#d69e2e} .tile.bad{border-top-color:var(--bad)} .tile.na{border-top-color:var(--line)}
+.tl{font-size:12px;color:var(--muted);font-weight:600} .tv{font-size:22px;font-weight:700;margin:2px 0;letter-spacing:-.01em} .ts{font-size:12px;color:var(--muted)}
+ol.find{padding-left:20px;margin:8px 0} ol.find li{margin:0 0 9px;break-inside:avoid} ol.find .muted{display:block}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0 4px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);background:var(--soft)}
+tr{break-inside:avoid}
+td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+td.best{background:var(--ok-bg)} td.worst{background:var(--bad-bg)}
+.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--na);color:var(--muted)}
+.tag.ok{background:var(--ok-bg);color:var(--ok)} .tag.bad{background:var(--bad-bg);color:var(--bad)} .tag.warn{background:var(--warn-bg);color:var(--warn)}
+.url{word-break:break-all}
+footer{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+@page{size:A4;margin:14mm}
+@media print{body{background:#fff}.bar{display:none}.doc{margin:0;padding:0;max-width:none;border-radius:0}h2{margin-top:26px}}
+@media (max-width:700px){.doc{margin:0;padding:24px 18px;border-radius:0}}
+"""
+
+
+def _reports_dir():
+    return os.path.join(DATA_DIR, "reports")
+
+
+def _latest_json(d, match):
+    for p in _json_files_newest_first(d):
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+        except Exception:
+            continue
+        if match(j):
+            return j
+    return None
+
+
+def _pct(n, t):
+    return f"{round(100 * n / t)}%" if t else "–"
+
+
+def _tag(tone, text):
+    return f'<span class="tag {tone}">{_he(text)}</span>'
+
+
+def _tile(label, value, sub, tone):
+    return (f'<div class="tile {tone}"><div class="tl">{_he(label)}</div><div class="tv">{_he(value)}</div>'
+            f'<div class="ts">{_he(sub)}</div></div>')
+
+
+def _cmp_metrics(s):
+    if s.get("error"):
+        return None
+    blocked = sorted(set((s.get("robots_blocked") or []) + (s.get("server_blocked") or [])))
+    sc = s.get("schema") or {"items": 0, "types": [], "errors": 0}
+    ct = s.get("counters") or {"total": 0, "bad": 0}
+    op = s.get("opening")
+    return {
+        "access": (f"{5 - len(blocked)} of 5" + (f" (blocked: {', '.join(blocked)})" if blocked else ""), 5 - len(blocked)),
+        "score": (f"{s.get('score', 0)}/100", s.get("score", 0)),
+        "words": (f"{s.get('words', 0):,}", s.get("words", 0)),
+        "opening": ({"pass": "Direct answer", "warn": "Needs work"}.get(op, "Missing"), {"pass": 2, "warn": 1}.get(op, 0)),
+        "schema": ((f"{sc['items']}: " + ", ".join(sc.get("types") or [])) if sc.get("items") else "None", 1 if sc.get("items") else 0),
+        "schemaErr": (str(sc.get("errors", 0)) if sc.get("items") else "–", -sc.get("errors", 0) if sc.get("items") else None),
+        "counters": ((f"{ct['bad']} of {ct['total']} stuck at start" if ct.get("bad") else f"{ct['total']} show final values")
+                     if ct.get("total") else "None", -ct.get("bad", 0) if ct.get("total") else None),
+        "dated": ("Yes" if s.get("dated") else "No", 1 if s.get("dated") else 0),
+        "llms": ("Yes" if s.get("llms") else "No", 1 if s.get("llms") else 0),
+        "sitemap": ("Yes" if s.get("sitemap") else "No", 1 if s.get("sitemap") else 0),
+    }
+
+
+def _cite_insights(j):
+    ok = [r for r in (j.get("results") or []) if not r.get("error") and r.get("brand")]
+    comps = (ok[0].get("competitors") or []) if ok else []
+    sov = [(f"{j.get('domain', '')} (you)", sum(1 for r in ok if r["brand"].get("mentioned")), sum(1 for r in ok if r["brand"].get("cited")))]
+    for i, c in enumerate(comps):
+        xs = [(r.get("competitors") or [])[i] for r in ok if len(r.get("competitors") or []) > i]
+        sov.append((c.get("label", ""), sum(1 for x in xs if x.get("mentioned")), sum(1 for x in xs if x.get("cited"))))
+    dom = j.get("domain", "")
+    comp_domains = [c.get("domain") for c in comps if c.get("domain")]
+
+    def whose(h):
+        if _domain_match(h, dom):
+            return "You"
+        return "Competitor" if any(_domain_match(h, d) for d in comp_domains) else "Third party"
+
+    hosts, opps = {}, {}
+    for r in ok:
+        for h in set(r.get("hosts") or []):
+            hosts[h] = hosts.get(h, 0) + 1
+            if not r["brand"].get("cited") and whose(h) == "Third party":
+                opps[h] = opps.get(h, 0) + 1
+    top = [(h, n, whose(h)) for h, n in sorted(hosts.items(), key=lambda x: -x[1])[:8]]
+    return len(ok), sov, top, sorted(opps.items(), key=lambda x: -x[1])[:5]
+
+
+def render_report(proj, agency, contact, notes, access, ready, scan, cite, cmpj, created_label):
+    findings, tiles, sections = [], [], []
+
+    # AI readiness of the homepage (fresh)
+    if ready:
+        sc = ready["score"]
+        tiles.append(_tile("AI readiness (homepage)", f"{sc}/100", f"{ready['counts']['fail']} to fix, {ready['counts']['warn']} to improve",
+                           "ok" if sc >= 75 else "warn" if sc >= 50 else "bad"))
+        order = {"fail": 0, "warn": 1, "pass": 2}
+        for c in sorted([c for c in ready["checks"] if c["status"] != "pass"], key=lambda c: order[c["status"]])[:6]:
+            findings.append(("high" if c["status"] == "fail" else "medium", f"Homepage: {c['label']}", c["detail"]))
+        rows = "".join(f'<tr><td style="width:80px">{_tag(*STAT_TAG[c["status"]])}</td><td><strong>{_he(c["label"])}</strong>'
+                       f'<div class="muted">{_he(c["detail"])}</div></td></tr>'
+                       for c in sorted(ready["checks"], key=lambda c: order[c["status"]]))
+        sections.append(("AI readiness of the homepage",
+                         '<p class="muted">How easy the homepage is for AI tools to understand and quote, as GPTBot receives it.</p>'
+                         f'<table><tbody>{rows}</tbody></table>'))
+    else:
+        tiles.append(_tile("AI readiness (homepage)", "–", "Could not be checked", "na"))
+
+    # AI crawler access (fresh)
+    if access:
+        agents = access["agents"]
+        ok_n = sum(1 for a in agents if a["verdict"] == "allowed")
+        tiles.append(_tile("AI crawler access", f"{ok_n} of {len(agents)}", "AI crawlers allowed",
+                           "ok" if ok_n == len(agents) else "warn" if ok_n >= len(agents) - 2 else "bad"))
+        for a in agents:
+            if a["verdict"] != "allowed":
+                findings.append(("high", f"{a['token']} ({a['company']}) cannot read the site",
+                                 "Blocked by robots.txt." if a["verdict"] == "blocked_robots" else "Blocked by the server or firewall (error or challenge page)."))
+        verdict = {"allowed": ("ok", "Allowed"), "blocked_robots": ("bad", "Blocked by robots.txt"), "blocked_server": ("bad", "Blocked by server")}
+        rows = "".join(f'<tr><td><strong>{_he(a["token"])}</strong></td><td>{_he(a["company"])}</td><td class="muted">{_he(a["purpose"])}</td>'
+                       f'<td>{_tag(*verdict.get(a["verdict"], ("na", a["verdict"])))}</td></tr>' for a in agents)
+        sections.append(("AI crawler access",
+                         '<p class="muted">Whether each AI crawler may read the site (robots.txt) and actually gets the page from the server.</p>'
+                         f'<table><thead><tr><th>Crawler</th><th>Company</th><th>Used for</th><th>Result</th></tr></thead><tbody>{rows}</tbody></table>'))
+    else:
+        tiles.append(_tile("AI crawler access", "–", "Could not be checked", "na"))
+
+    # Site scan (latest saved)
+    if scan:
+        res = scan.get("results") or []
+        t = len(res)
+        e = sum(1 for r in res if r.get("level") == "error")
+        w = sum(1 for r in res if r.get("level") == "warning")
+        tiles.append(_tile("Site scan", f"{e} · {w}", f"pages with errors · warnings, of {t} checked",
+                           "ok" if not e and not w else "warn" if not e else "bad"))
+        codes = {}
+        for r in res:
+            for i in r.get("issues") or []:
+                c = codes.setdefault(i["code"], [i["level"], 0])
+                c[1] += 1
+        ranked = sorted(codes.items(), key=lambda x: ({"error": 0, "warning": 1}.get(x[1][0], 2), -x[1][1]))
+        for code, (lvl, n) in ranked:
+            if lvl in ("error", "warning") and code != "redirect":
+                findings.append(("high" if lvl == "error" else "medium", f"Site scan: {SCAN_LABELS.get(code, code)}", f"Found on {n} of {t} pages."))
+        lvl_tag = {"error": ("bad", "Error"), "warning": ("warn", "Warning"), "info": ("na", "Info")}
+        irows = "".join(f'<tr><td>{_tag(*lvl_tag.get(lvl, ("na", lvl)))}</td><td>{_he(SCAN_LABELS.get(code, code))}</td><td class="num">{n} of {t}</td></tr>'
+                        for code, (lvl, n) in ranked) or '<tr><td colspan="3">No issues found.</td></tr>'
+        worst = [r for r in res if r.get("level") == "error"][:10]
+        prow = "".join(f'<tr><td class="url">{_he(r["url"])}</td><td class="muted">{_he("; ".join(i["msg"] for i in r.get("issues") or [] if i["level"] == "error"))}</td></tr>' for r in worst)
+        sections.append(("Site scan",
+                         f'<p class="muted">{t} pages checked as {_he(scan.get("bot_label") or "an AI crawler")} on {_he((scan.get("started_at") or "")[:10])}.</p>'
+                         f'<h3>Issues by type</h3><table><thead><tr><th>Level</th><th>Issue</th><th>Pages</th></tr></thead><tbody>{irows}</tbody></table>'
+                         + (f'<h3>Pages with errors</h3><table><thead><tr><th>Page</th><th>Errors</th></tr></thead><tbody>{prow}</tbody></table>' if worst else "")))
+    else:
+        tiles.append(_tile("Site scan", "–", "No scan yet", "na"))
+
+    # AI citations (latest saved)
+    if cite:
+        summ = cite.get("summary") or cite_summary(cite)
+        n, sov, top, opps = _cite_insights(cite)
+        score = summ.get("score")
+        tiles.append(_tile("AI visibility", f"{score}/100" if score is not None else "–", f"cited in {_pct(summ['cited'], summ['answers'])} of AI answers",
+                           "na" if score is None else "ok" if score >= 50 else "warn" if score >= 20 else "bad"))
+        if summ["answers"] and summ["cited"] / summ["answers"] < 0.3:
+            findings.append(("high", "AI assistants rarely cite the site", f"Cited as a source in {summ['cited']} of {summ['answers']} answers to customer questions."))
+        for h, c in opps[:3]:
+            findings.append(("medium", f"Get listed or mentioned on {h}", f"AI assistants cited it in {c} answers where the site was not cited."))
+        qs = "".join(f"<li>{_he(q)}</li>" for q in cite.get("prompts") or [])
+        srows = "".join(f'<tr><td><strong>{_he(lab)}</strong></td><td class="num">{m} ({_pct(m, n)})</td><td class="num">{c} ({_pct(c, n)})</td></tr>' for lab, m, c in sov)
+        trows = "".join(f'<tr><td>{_he(h)}</td><td class="num">{c} of {n}</td><td>{_he(w)}</td></tr>' for h, c, w in top)
+        sections.append(("Visibility in AI answers",
+                         f'<p class="muted">{n} answers from {len(cite.get("models") or [])} AI models with live web search, tested on {_he((cite.get("started_at") or "")[:10])}. '
+                         'Visibility score: up to 40 points when an answer names the business, up to 40 when it cites the site, up to 20 for positive wording.</p>'
+                         f'<h3>Questions tested</h3><ul>{qs}</ul>'
+                         f'<h3>Share of voice</h3><table><thead><tr><th>Brand</th><th>Named in answers</th><th>Cited as a source</th></tr></thead><tbody>{srows}</tbody></table>'
+                         + (f'<h3>Sources AI cited most</h3><table><thead><tr><th>Website</th><th>Cited in</th><th>Whose site</th></tr></thead><tbody>{trows}</tbody></table>' if top else "")))
+    else:
+        tiles.append(_tile("AI visibility", "–", "No citation test yet", "na"))
+
+    # Competitors (latest saved)
+    if cmpj:
+        sites = cmpj.get("sites") or []
+        ms = [_cmp_metrics(s) for s in sites]
+        mine, behind = ms[0] if ms else None, []
+        if mine:
+            for key, label in CMP_ROWS:
+                if mine[key][1] is None:
+                    continue
+                better = [(s["host"], m[key][0]) for s, m in zip(sites[1:], ms[1:]) if m and m[key][1] is not None and m[key][1] > mine[key][1]]
+                if better:
+                    behind.append((label, mine[key][0], better))
+        tiles.append(_tile("Competitors", f"Behind on {len(behind)}", f"of {len(CMP_ROWS)} checks, vs {len(sites) - 1} competitors",
+                           "ok" if not behind else "warn" if len(behind) <= 3 else "bad"))
+        for label, yours, better in behind[:4]:
+            findings.append(("medium", f"Competitors ahead: {label}", f"This site: {yours}. " + "; ".join(f"{h}: {v}" for h, v in better) + "."))
+        head = "".join(f'<th>{"This site: " if s.get("you") else ""}{_he(s["host"])}</th>' for s in sites)
+        body = ""
+        for key, label in CMP_ROWS:
+            vals = [m[key][1] for m in ms if m and m[key][1] is not None]
+            best, worst = (max(vals), min(vals)) if vals else (None, None)
+            cells = ""
+            for m in ms:
+                if not m:
+                    cells += "<td>–</td>"
+                    continue
+                v = m[key][1]
+                cls = "" if v is None or best == worst else "best" if v == best else "worst" if v == worst else ""
+                cells += f'<td class="{cls}">{_he(m[key][0])}</td>'
+            body += f'<tr><td class="muted">{_he(label)}</td>{cells}</tr>'
+        sections.append(("Competitor comparison",
+                         f'<p class="muted">Checked on {_he((cmpj.get("checked_at") or "")[:10])}. Best result per row in green, weakest in red.</p>'
+                         f'<div style="overflow-x:auto"><table><thead><tr><th>Check</th>{head}</tr></thead><tbody>{body}</tbody></table></div>'))
+    else:
+        tiles.append(_tile("Competitors", "–", "No comparison yet", "na"))
+
+    findings.sort(key=lambda f: 0 if f[0] == "high" else 1)
+    find_html = ("".join(f'<li>{_tag("bad" if sev == "high" else "warn", "High" if sev == "high" else "Medium")} <strong>{_he(t)}</strong>'
+                         f'<span class="muted">{_he(d)}</span></li>' for sev, t, d in findings[:14])
+                 or "<li>No significant issues found. Keep monitoring as the site and AI tools change.</li>")
+    notes_html = "".join(f"<p>{_he(p)}</p>" for p in re.split(r"\n\s*\n", notes.strip()) if p.strip())
+    by = _he(agency) + (f" · {_he(contact)}" if contact else "")
+    body = "".join(f"<h2>{_he(t)}</h2>{h}" for t, h in sections)
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>AI visibility report: {_he(proj['name'])}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
+<style>{REPORT_CSS}</style></head><body>
+<div class="bar"><a href="__PDF__">Download PDF</a></div>
+<div class="doc">
+<header class="cover"><div class="agency">{by}</div><h1>AI visibility report</h1>
+<div class="client">{_he(proj['name'])}</div><div class="meta">{_he(proj['site'])} · {_he(created_label)}</div></header>
+{f'<div class="notes">{notes_html}</div>' if notes_html else ''}
+<h2 style="margin-top:8px">At a glance</h2><div class="tiles">{''.join(tiles)}</div>
+<h2>Key findings</h2><ol class="find">{find_html}</ol>
+{body}
+<footer>How this report was made: crawler access and homepage readiness were checked when the report was created; the site scan,
+AI answer test and competitor comparison are the most recent saved runs, on the dates shown. Checks are made from the agency's server
+using each crawler's user agent, so they show what crawlers receive today, not what AI tools have stored from earlier visits.
+AI answers vary from run to run.</footer>
+</div></body></html>"""
+
+
+def build_report(p):
+    if not storage_writable():
+        return {"error": f"The server cannot write to {DATA_DIR}, so reports can't be saved."}, 500
+    proj = next((x for x in load_projects() if x.get("id") == str(p.get("project_id", ""))), None)
+    if not proj:
+        return {"error": "Choose a client project first."}, 400
+    site = proj["site"]
+    st = load_settings()
+    agency = (st.get("agency_name") or "").strip() or "Prepared for you"
+    contact = (st.get("agency_contact") or "").strip()
+    notes = str(p.get("notes") or "")[:4000]
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fa = ex.submit(check_access, site)
+        fr = ex.submit(_readiness, site)
+        access, acode = fa.result()
+        rres, rcode, _ = fr.result()
+    key, host = _site_key(site), _bare_host(site)
+    scan = _latest_json(_scan_dir(), lambda j: _site_key(j.get("url", "")) == key and j.get("results"))
+    cite = _latest_json(_cite_dir(), lambda j: _clean_domain(j.get("domain", "")) == host and j.get("results"))
+    cmpj = _latest_json(_cmp_dir(), lambda j: _bare_host(j.get("site", "")) == host)
+    tm = time.localtime()
+    label = f"{tm.tm_mday} {time.strftime('%B %Y', tm)}"
+    html_doc = render_report(proj, agency, contact, notes, access if acode == 200 else None, rres if rcode == 200 else None,
+                             scan, cite, cmpj, label)
+    rid = re.sub(r"[^A-Za-z0-9_-]", "", secrets.token_urlsafe(24))[:32]
+    html_doc = html_doc.replace("__PDF__", f"/r/{rid}.pdf")
+    d = _reports_dir()
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, rid + ".html"), "w", encoding="utf-8") as f:
+        f.write(html_doc)
+    meta = {"id": rid, "project_id": proj["id"], "name": proj["name"], "site": site, "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "has": {"scan": bool(scan), "cite": bool(cite), "compare": bool(cmpj), "access": acode == 200, "readiness": rcode == 200}}
+    with open(os.path.join(d, rid + ".json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    return meta, 200
+
+
+def list_reports(project_id):
+    out = []
+    for p in _json_files_newest_first(_reports_dir()):
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+        except Exception:
+            continue
+        if not project_id or j.get("project_id") == project_id:
+            out.append(j)
+    return {"reports": out[:50]}
+
+
+def delete_report(rid):
+    if REPORT_ID_RE.match(rid or ""):
+        for ext in (".html", ".json", ".pdf"):
+            try:
+                os.remove(os.path.join(_reports_dir(), rid + ext))
+            except OSError:
+                pass
+    return {"ok": True}, 200
+
+
+def report_pdf(rid):
+    """Return PDF bytes for a saved report, rendering it with the headless browser the first time."""
+    d = _reports_dir()
+    src, out = os.path.join(d, rid + ".html"), os.path.join(d, rid + ".pdf")
+    if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(src):
+        with open(out, "rb") as f:
+            return f.read(), None
+    chrome = _chrome_path()
+    if not chrome:
+        return None, "The PDF engine is not installed on this server. Use your browser's Print, then Save as PDF."
+    if not RENDER_LOCK.acquire(timeout=60):
+        return None, "The server is busy rendering another page. Try again in a minute."
+    tmp = tempfile.mkdtemp(prefix="abvc-pdf-")
+    try:
+        port = _ensure_proxy()
+        tmp_pdf = os.path.join(tmp, "report.pdf")
+        cmd = [chrome, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--disable-extensions",
+               "--disable-background-networking", "--disable-crash-reporter", f"--user-data-dir={tmp}",
+               f"--proxy-server=http://127.0.0.1:{port}", "--virtual-time-budget=4000",
+               "--no-pdf-header-footer", "--print-to-pdf-no-header", f"--print-to-pdf={tmp_pdf}", "file://" + src]
+        if "headless" not in os.path.basename(chrome):
+            cmd.insert(1, "--headless=new")
+        subprocess.run(cmd, capture_output=True, timeout=90, env=dict(os.environ, HOME=tmp))
+        if not os.path.exists(tmp_pdf) or os.path.getsize(tmp_pdf) < 500:
+            return None, "The PDF could not be created. Use your browser's Print, then Save as PDF."
+        shutil.copyfile(tmp_pdf, out)
+        with open(out, "rb") as f:
+            return f.read(), None
+    except subprocess.TimeoutExpired:
+        return None, "Creating the PDF took too long. Use your browser's Print, then Save as PDF."
+    finally:
+        RENDER_LOCK.release()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -2808,7 +3184,8 @@ def settings_public():
     else:
         source, hint = "none", ""
     return {"key_source": source, "key_hint": hint, "models": s.get("models", []),
-            "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD)}
+            "storage_ok": storage_writable(), "auth": bool(APP_PASSWORD),
+            "agency_name": s.get("agency_name", ""), "agency_contact": s.get("agency_contact", "")}
 
 
 # ---------------------------------------------------------------- sessions
@@ -3003,6 +3380,28 @@ class Handler(BaseHTTPRequestHandler):
             if self._authorized():
                 return self._redirect("/")
             return self._send(200, read_web("login.html"), "text/html; charset=utf-8")
+        if path.startswith("/r/"):
+            rid = path[3:]
+            pdf = rid.endswith(".pdf")
+            rid = rid[:-4] if pdf else rid
+            src = os.path.join(_reports_dir(), rid + ".html")
+            if not REPORT_ID_RE.match(rid) or not os.path.exists(src):
+                return self._send(404, "Report not found", "text/plain; charset=utf-8")
+            hdrs = {"X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer"}
+            if pdf:
+                data, err = report_pdf(rid)
+                if err:
+                    return self._send(503, err, "text/plain; charset=utf-8", hdrs)
+                try:
+                    with open(os.path.join(_reports_dir(), rid + ".json"), encoding="utf-8") as f:
+                        meta = json.load(f)
+                    fname = re.sub(r"[^A-Za-z0-9.-]+", "-", f"AI-visibility-report-{meta.get('name', 'client')}-{meta.get('created_at', '')[:10]}") + ".pdf"
+                except Exception:
+                    fname = "AI-visibility-report.pdf"
+                hdrs["Content-Disposition"] = f'attachment; filename="{fname}"'
+                return self._send(200, data, "application/pdf", hdrs)
+            with open(src, encoding="utf-8") as f:
+                return self._send(200, f.read(), "text/html; charset=utf-8", hdrs)
         if path == "/logout":
             return self._redirect("/login", f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
         if not self._authorized():
@@ -3030,6 +3429,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/reports":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            self._json(list_reports((q.get("project") or [""])[0]))
         elif path == "/api/compare/list":
             self._json(list_compares())
         elif path == "/api/compare/get":
@@ -3093,6 +3495,12 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/report":
+                body, code = build_report(payload)
+                return self._json(body, code)
+            if path == "/api/reports/delete":
+                body, code = delete_report(str(payload.get("id", "")))
+                return self._json(body, code)
             if path == "/api/compare":
                 body, code = run_compare(payload)
                 return self._json(body, code)
@@ -3152,6 +3560,9 @@ class Handler(BaseHTTPRequestHandler):
                     updates["openrouter_key"] = str(payload["openrouter_key"]).strip()[:500]
                 if isinstance(payload.get("models"), list):
                     updates["models"] = [str(m).strip()[:200] for m in payload["models"] if str(m).strip()][:50]
+                for k in ("agency_name", "agency_contact"):
+                    if k in payload:
+                        updates[k] = str(payload.get(k) or "").strip()[:160] or None
                 save_settings(updates)
                 return self._json(settings_public())
         except Exception as e:
