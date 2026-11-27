@@ -15,7 +15,7 @@ The sidebar is organized the way the work is usually done: pick a client, check 
 | Page | What it does |
 |---|---|
 | **Projects** | Save each client once: website, brand names, competitors, location and customer questions. Choosing a client in the sidebar fills in every page and shows only that client's results. |
-| **Reports** | Branded client report with a scorecard, key findings and detailed sections. Shared as a private link (no sign-in needed, hidden from search engines) or downloaded as a PDF. |
+| **Reports** | Branded client report: a cover page, a summary with score dials and changes since the previous report, ranked priorities with what to do, your next steps, and detailed sections. Choose the title, sections, summary or full detail, and up to 3 pages to review (remembered per client). Shared as a private link (no sign-in needed, hidden from search engines) or downloaded as a PDF. |
 | **Monitoring** | Re-checks clients daily or weekly and emails you when something gets worse: a crawler becomes blocked, pages start failing, or the readiness or visibility score drops. |
 | **Client portal** | On the Reports page: give a client their own sign-in at `/portal` to view their scores, visibility trend, reports and monitoring history. View only; clients can't run checks or see other clients. |
 
