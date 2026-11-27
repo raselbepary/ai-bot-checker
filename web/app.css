@@ -1,12 +1,12 @@
-/* AI Bot View Checker
+/* Clay Visibility Studio
    Visual system: a quiet, cool-neutral workspace with a deep ink sidebar.
-   One accent (deep teal) is reserved for actions and the current page; status colours carry meaning only. */
+   One accent (The Clay Media orange) is reserved for actions and the current page; status colours carry meaning only. */
 :root{
   --paper:#f2f4f3; --surface:#ffffff; --sunk:#f7f8f8; --ink:#18212b; --muted:#5e6b78; --line:#dce2e0; --line-soft:#e8ecea;
   --night:#13202b; --night-ink:#d3dde4; --night-muted:#8597a6; --night-hi:rgba(255,255,255,.07); --night-line:rgba(255,255,255,.09);
-  --accent:#0b7a6e; --accent-hover:#086257; --accent-ink:#ffffff; --accent-soft:#e0f1ee;
-  --ok:#17744a; --ok-bg:#e2f3e9; --bad:#b4261e; --bad-bg:#fbe7e5; --warn:#8a5800; --warn-bg:#fcf0d5; --na-bg:#eef1f1;
-  --code:#f6f8f8; --focus:#0b7a6e;
+  --accent:#c2410c; --accent-hover:#9a3412; --accent-ink:#ffffff; --accent-soft:#fde9d9;
+  --ok:#17744a; --ok-bg:#e2f3e9; --bad:#b4261e; --bad-bg:#fbe7e5; --warn:#7a5b00; --warn-bg:#fbf1c4; --na-bg:#eef1f1;
+  --code:#f6f8f8; --focus:#c2410c;
   --radius:10px; --radius-sm:7px;
   color-scheme: light;
 }
@@ -14,9 +14,9 @@
   :root{
     --paper:#0f1519; --surface:#161e24; --sunk:#12191e; --ink:#e3e9ed; --muted:#94a3af; --line:#27333b; --line-soft:#1f2a31;
     --night:#0b1115; --night-ink:#cfd9e0; --night-muted:#7a8b98; --night-hi:rgba(255,255,255,.06); --night-line:rgba(255,255,255,.07);
-    --accent:#3cbfab; --accent-hover:#5ad0bd; --accent-ink:#04221d; --accent-soft:#12332e;
+    --accent:#ff8a3d; --accent-hover:#ffa463; --accent-ink:#1c0c02; --accent-soft:#3b2112;
     --ok:#6fd3a0; --ok-bg:#15342a; --bad:#ff8f86; --bad-bg:#3a1a18; --warn:#f0c46c; --warn-bg:#3a2d13; --na-bg:#1f2a31;
-    --code:#12191e; --focus:#3cbfab;
+    --code:#12191e; --focus:#ff8a3d;
     color-scheme: dark;
   }
 }
@@ -34,9 +34,14 @@ a{color:var(--accent)}
 .brand{display:flex;align-items:center;gap:10px;padding:2px 8px 14px;color:#fff;text-decoration:none;
   font-weight:650;font-size:15.5px;line-height:1.2;letter-spacing:-.01em}
 @media (prefers-color-scheme: dark){.brand{color:var(--night-ink)}}
-.brand .mark{flex:none;width:30px;height:30px;border-radius:8px;background:var(--accent);color:var(--accent-ink);
-  display:grid;place-items:center}
-.brand .mark svg{width:18px;height:18px}
+.brand{flex-direction:column;align-items:flex-start;gap:7px}
+.brand img{display:block;width:172px;max-width:100%;height:auto}
+.brand.has-logo .co{display:none}
+.brand.has-logo .appname{font-size:13px;font-weight:600;color:var(--night-muted);letter-spacing:.01em}
+.logoprev{display:flex;align-items:center;justify-content:center;height:70px;border:1px solid var(--line);border-radius:8px;margin:6px 0 8px;padding:10px}
+.logoprev.light{background:#ffffff} .logoprev.dark{background:#13202b}
+.logoprev img{max-height:44px;max-width:100%}
+.logoprev .note{margin:0;color:#8597a6}
 .projpick{padding:0 8px 10px;margin-bottom:4px;border-bottom:1px solid var(--night-line)}
 .projpick label{display:block;font-size:12px;color:var(--night-muted);margin:0 0 5px}
 .projpick select{width:100%;padding:8px 10px;font-size:14px;color:var(--night-ink);background:var(--night-hi);
@@ -48,9 +53,9 @@ a{color:var(--accent)}
   color:var(--night-ink);text-decoration:none;font-size:14.5px}
 .nav nav a .ico{flex:none;width:17px;height:17px;opacity:.75}
 .nav nav a:hover{background:var(--night-hi);color:#fff}
-.nav nav a[aria-current="page"]{background:rgba(60,191,171,.16);color:#fff;font-weight:600}
-.nav nav a[aria-current="page"] .ico{opacity:1;color:#5ad0bd}
-.nav nav a[aria-current="page"]::before{content:"";position:absolute;left:-12px;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:#3cbfab}
+.nav nav a[aria-current="page"]{background:rgba(255,122,38,.16);color:#fff;font-weight:600}
+.nav nav a[aria-current="page"] .ico{opacity:1;color:#ffa463}
+.nav nav a[aria-current="page"]::before{content:"";position:absolute;left:-12px;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:#ff8a3d}
 .navlinks{display:flex;flex-direction:column;flex:1;min-height:0}
 .nav-bottom{margin-top:auto !important;padding-top:10px;border-top:1px solid var(--night-line)}
 @media (prefers-color-scheme: dark){.nav{border-right:1px solid var(--night-line)}}
@@ -74,7 +79,8 @@ h2.sub{margin:26px 0 6px}
   .shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}
   .nav{position:static;height:auto;overflow:visible;align-content:flex-start;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px 0;border-right:0}
   .brand{flex:1;padding:0;font-size:14.5px}
-  .brand .mark{width:26px;height:26px}
+  .brand img{width:128px}
+  .brand.has-logo .appname{display:none}
   .projpick{border:0;padding:0;margin:0}
   .projpick label{display:none}
   .projpick select{width:auto;max-width:170px;padding:6px 8px}
@@ -206,7 +212,7 @@ select.acc-choice{width:auto;padding:5px 8px}
 .daybars{display:flex;align-items:flex-end;gap:2px;height:130px;padding-bottom:4px;border-bottom:1px solid var(--line);overflow-x:auto}
 .daybars .day{flex:1 0 8px;max-width:28px;display:flex;flex-direction:column-reverse;height:100%}
 .daybars .day span{display:block;width:100%}
-.daybars .real{background:var(--accent);border-radius:2px 2px 0 0}
+.daybars .real{background:var(--ok);border-radius:2px 2px 0 0}
 .daybars .fake{background:var(--bad)}
 .daylabels{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:4px}
 input[type=file]{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:7px 9px}
