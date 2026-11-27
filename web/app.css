@@ -303,6 +303,19 @@ ul.outline li.l2{padding-left:16px} ul.outline li.l3{padding-left:32px} ul.outli
 .logoprev .note{margin:0;color:#a1a1aa}
 code{font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--sunk);border:1px solid var(--line-soft);padding:2px 7px;border-radius:6px;word-break:break-all}
 
+/* ---------------------------------------------------------------- answer audit */
+.auditkpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.akpi{border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.akpi b{display:block;font:800 28px/1.1 var(--display);font-stretch:110%;margin-bottom:4px}
+.akpi span{font-size:13px;color:var(--muted)}
+.barlist .br{display:grid;grid-template-columns:minmax(110px,200px) 1fr 44px;gap:10px;align-items:center;font-size:13.5px;padding:4px 0}
+.barlist .br span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.barlist .bt{height:10px;border-radius:99px;background:var(--na-bg);overflow:hidden}
+.barlist .bt i{display:block;height:100%;background:var(--ink-2);opacity:.55;border-radius:99px}
+.barlist .br.me{font-weight:700}
+.barlist .br.me .bt i{background:var(--brand);opacity:1}
+.barlist .br b{text-align:right;font-variant-numeric:tabular-nums}
+
 /* ---------------------------------------------------------------- report options */
 .secpick label{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:14px;cursor:pointer}
 .secpick label:last-child{border-bottom:0}
