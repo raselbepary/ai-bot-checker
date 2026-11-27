@@ -171,7 +171,7 @@
               <div class="fld" style="margin-top:14px">What to check</div>
               <label class="inline-check" style="color:var(--ink)"><input type="checkbox" checked disabled> AI crawler access and homepage AI readiness (always)</label>
               <label class="inline-check" style="color:var(--ink)"><input type="checkbox" id="monScan"> Site scan, up to
-                <select id="monLimit" style="width:auto;padding:3px 6px;margin:-3px 2px 0"><option>25</option><option selected>50</option><option>100</option></select> pages</label>
+                <select id="monLimit" style="width:auto;padding:3px 6px;margin:-3px 2px 0"><option>25</option><option selected>50</option><option>100</option><option>250</option><option>500</option></select> pages</label>
               <label class="inline-check" style="color:var(--ink)"><input type="checkbox" id="monCite"> Citation test with the project's questions <span class="note" style="margin:0">(first 3 models in Settings; costs OpenRouter credits each run)</span></label>
             </div>
             <div>
@@ -262,10 +262,12 @@
           <label class="fld" for="scanBot" style="margin:0">Scan as</label>
           <select id="scanBot" style="width:auto"></select>
           <label class="fld" for="scanLimit" style="margin:0 0 0 10px">Pages</label>
-          <select id="scanLimit" style="width:auto"><option>25</option><option selected>50</option><option>100</option><option>200</option></select>
+          <input id="scanLimit" type="number" min="1" max="2000" step="1" value="50" list="scanLimits" style="width:96px" aria-describedby="scanEst">
+          <datalist id="scanLimits"><option value="25"></option><option value="50"></option><option value="100"></option><option value="200"></option><option value="500"></option><option value="1000"></option><option value="2000"></option></datalist>
           <label class="fld" for="scanHistory" style="margin:0 0 0 10px">Recent scans</label>
           <select id="scanHistory" style="width:auto;max-width:340px"><option value="">None yet</option></select>
         </div>
+        <div class="note" id="scanEst" style="margin-top:6px"></div>
         <div class="status" id="scanStatus"></div>
         <div class="progress hidden" id="scanProgress"><div id="scanBar"></div></div>
       </section>
