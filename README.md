@@ -42,7 +42,7 @@ The sidebar is organized the way the work is usually done: pick a client, check 
 
 | Page | What it does |
 |---|---|
-| **AI citations** | Asks AI models with live web search, and optionally Google AI Overviews through DataForSEO, the questions customers ask (any number up to 200 per test). An answer audit shows on how many questions at least one engine names the business, how often it is in a top 3, where each answer places it, who AI names instead, and engine-by-engine results. Shows whether the site is named or cited, a visibility score (0 to 100) and its trend, sentiment, share of voice against competitors, the sources AI cites, citation opportunities with outreach drafts, and AI-suggested questions. |
+| **AI citations** | Asks AI models with live web search, and optionally the real ChatGPT and Gemini apps plus Google AI Overviews and AI Mode through DataForSEO, the questions customers ask (any number up to 200 per test). An answer audit shows on how many questions at least one engine names the business, how often it is in a top 3, where each answer places it, who AI names instead, and engine-by-engine results. Shows whether the site is named or cited, a visibility score (0 to 100) and its trend, sentiment, share of voice against competitors, the sources AI cites, citation opportunities with outreach drafts, and AI-suggested questions. |
 | **AI test** | Lets models read a page (as text, or by fetching it live) and answer questions about it, to check what they understand. |
 
 ### Settings
@@ -89,7 +89,7 @@ The Dockerfile uses `python:3.12-slim-bookworm` (Debian 12) because the browser 
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | none | Optional email settings; override what is saved in Settings. `SMTP_SECURITY` is `starttls`, `ssl` or `none`. |
 | `CITE_MAX_QUESTIONS` | `200` | Most questions one AI citations test may ask (up to 1000) |
 | `CITE_PARALLEL` | `6` | How many AI answers are fetched at the same time |
-| `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | none | Optional DataForSEO login for Google AI Overviews (it can also be saved in Settings) |
+| `DATAFORSEO_LOGIN`, `DATAFORSEO_PASSWORD` | none | Optional DataForSEO login for the ChatGPT and Gemini apps and Google AI Overviews and AI Mode (it can also be saved in Settings) |
 | `SCAN_MAX_PAGES` | `2000` | Most pages one site scan may check (up to 10000). Larger scans take longer and use more storage. |
 | `CHROME_PATH` | auto-detected | Path to a Chromium headless shell, if it is not in the default location |
 | `ALLOW_PRIVATE_URLS` | off | `1` allows checking private or internal addresses (local testing only) |
