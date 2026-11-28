@@ -2512,7 +2512,7 @@ def render_report(proj, agency, contact, opts, data, prev, created_label):
                 srows = "".join(f'<tr><td><strong>{_he(lab)}</strong></td><td class="num">{m} ({_pct(m, n)})</td><td class="num">{c} ({_pct(c, n)})</td></tr>' for lab, m, c in sov)
                 trows = "".join(f'<tr><td>{_he(h)}</td><td class="num">{c} of {n}</td><td>{_he(w)}</td></tr>' for h, c, w in top)
                 body.append(("Visibility in AI answers",
-                             _audit_html(cite) +
+                             _audit_html(cite) + _gaps_html(cite) +
                              f'<p class="muted">{n} answers from {len(cite.get("models") or [])} AI models with live web search, tested on '
                              f'{_he((cite.get("started_at") or "")[:10])}. Score: up to 40 points when an answer names the business, up to 40 when it '
                              'cites the site, up to 20 for positive wording.</p>'
@@ -3718,6 +3718,125 @@ def _audit_html(j):
             f'<h3>All questions</h3><div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Question</th>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
 
 
+def _keys_match(a, b):
+    return bool(a and b) and (a == b or (min(len(a), len(b)) >= 4 and (a in b or b in a)))
+
+
+def _rival_counts(j):
+    """Questions each competitor is named on (listed competitors plus the firms found most often in answers)."""
+    ok = [r for r in (j.get("results") or []) if not r.get("error") and not r.get("no_answer") and r.get("brand")]
+    byq = {}
+    for r in ok:
+        byq.setdefault(r["prompt"], []).append(r)
+    out = {}
+
+    def add(key, name, n):
+        if key and not any(_keys_match(key, k) for k in out):
+            out[key] = {"name": name, "q": n}
+
+    for i, c in enumerate(_parse_entity(x) for x in j.get("competitors") or []):
+        name = c["label"].split(" (")[0]
+        add(_ent_key(name), name, len({r["prompt"] for r in ok if i < len(r.get("competitors") or []) and r["competitors"][i].get("mentioned")}))
+    brand = {"names": j.get("brands") or [], "domain": j.get("domain", "")}
+    counts = {}
+    for r in ok:
+        for n in r.get("entities") or []:
+            if entity_pos(brand, [n]):
+                continue
+            e = counts.setdefault(_ent_key(n), {"name": n, "qs": set()})
+            e["qs"].add(r["prompt"])
+    for k, e in sorted(counts.items(), key=lambda x: -len(x[1]["qs"]))[:8]:
+        add(k, e["name"], len(e["qs"]))
+    return {"questions": len(byq), "you": sum(1 for rs in byq.values() if any(x["brand"].get("mentioned") for x in rs)), "rivals": out}
+
+
+def _gaps_html(j):
+    """Report table: questions where competitors are named and the business is not."""
+    ok = [r for r in (j.get("results") or []) if not r.get("error") and not r.get("no_answer") and r.get("brand")]
+    brand = {"names": j.get("brands") or [], "domain": j.get("domain", "")}
+    byq = {}
+    for r in ok:
+        byq.setdefault(r["prompt"], []).append(r)
+    rows = []
+    for q in j.get("prompts") or []:
+        rs = byq.get(q) or []
+        if not rs or any(x["brand"].get("mentioned") for x in rs):
+            continue
+        names = []
+        for x in rs:
+            for n in (x.get("entities") or []) + [c["label"].split(" (")[0] for c in x.get("competitors") or [] if c.get("mentioned")]:
+                if not entity_pos(brand, [n]) and not any(_keys_match(_ent_key(n), _ent_key(y)) for y in names):
+                    names.append(n)
+        if names:
+            rows.append((q, names[:4]))
+    if not rows:
+        return ""
+    body = "".join(f"<tr><td>{_he(q)}</td><td>{_he(', '.join(ns))}</td></tr>" for q, ns in rows[:25])
+    more = f'<p class="muted">And {len(rows) - 25} more.</p>' if len(rows) > 25 else ""
+    return (f'<h3>Questions competitors win</h3><p class="muted">{len(rows)} questions where AI names other firms but not the business. '
+            'Each is a candidate for a page that answers it directly.</p>'
+            f'<table><thead><tr><th>Question</th><th>Named instead</th></tr></thead><tbody>{body}</tbody></table>{more}')
+
+
+def _market_file(domain):
+    return os.path.join(DATA_DIR, "market", re.sub(r"[^a-z0-9.-]", "_", (domain or "").lower())[:100] + ".json")
+
+
+def load_market(domain):
+    try:
+        with open(_market_file(domain), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def market_mentions(p):
+    if not dfs_public()["ready"]:
+        return {"error": "The market view needs a DataForSEO login. Add it in Settings."}, 400
+    names = list(dict.fromkeys(str(x).strip()[:100] for x in (p.get("brands") or []) if str(x).strip()))[:10]
+    if len(names) < 2:
+        return {"error": "Add at least one competitor to compare."}, 400
+    domain = _clean_domain(str(p.get("domain") or ""))
+    c = dfs_config()
+    country = c["location"].split(",")[-1].strip() or "United States"
+    plats, cost = [], 0.0
+    for plat, label in (("google", "Google AI Overviews"), ("chat_gpt", "ChatGPT")):
+        if plat == "chat_gpt" and country != "United States":
+            plats.append({"platform": plat, "label": label, "error": "DataForSEO has ChatGPT mention data for the United States only."})
+            continue
+        task = {"targets": [{"aggregation_key": n, "target": [{"keyword": n, "search_scope": ["answer"]}]} for n in names],
+                "location_name": country, "language_code": c["language"], "platform": plat, "internal_list_limit": 10}
+        body, err = _dfs_request("/v3/ai_optimization/llm_mentions/cross_aggregated_metrics/live", [task], timeout=150)
+        t = ((body or {}).get("tasks") or [{}])[0] or {}
+        if not err and t.get("status_code") != 20000:
+            err = f"DataForSEO: {t.get('status_message') or 'request failed'}"[:300]
+        if err:
+            plats.append({"platform": plat, "label": label, "error": err})
+            continue
+        cost += float(t.get("cost") or 0)
+        res = (t.get("result") or [{}])[0] or {}
+
+        def sums(group):
+            g = group or []
+            return sum(int(x.get("mentions") or 0) for x in g), sum(int(x.get("ai_search_volume") or 0) for x in g)
+
+        items = {}
+        for it in res.get("items") or []:
+            m, v = sums(it.get("platform") or it.get("location"))
+            items[str(it.get("key"))] = {"mentions": m, "volume": v}
+        tot = res.get("total") or {}
+        plats.append({"platform": plat, "label": label, "items": items,
+                      "sources": [{"key": x.get("key"), "mentions": x.get("mentions")} for x in (tot.get("sources_domain") or [])][:10],
+                      "brands": [{"key": x.get("key"), "mentions": x.get("mentions")} for x in (tot.get("brand_entities_title") or [])][:10]})
+    out = {"domain": domain, "brands": names, "platforms": plats, "cost": round(cost, 3), "location": country,
+           "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if domain and storage_writable() and any("items" in x for x in plats):
+        os.makedirs(os.path.dirname(_market_file(domain)), exist_ok=True)
+        with open(_market_file(domain), "w", encoding="utf-8") as f:
+            json.dump(out, f)
+    return out, 200
+
+
 # ---------------------------------------------------------------- AI citations
 CITES = {}
 _CITE_LOCK = threading.Lock()
@@ -3885,7 +4004,7 @@ def list_cites():
         try:
             with open(p, encoding="utf-8") as f:
                 j = json.load(f)
-            out.append(dict({k: j.get(k) for k in keys}, summary=j.get("summary") or cite_summary(j)))
+            out.append(dict({k: j.get(k) for k in keys}, summary=j.get("summary") or cite_summary(j), rivals=_rival_counts(j)))
         except Exception:
             pass
     return {"runs": out}
@@ -4792,6 +4911,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(job if job else {"error": "Test not found. It may have been removed."}, 200 if job else 404)
         elif path == "/api/cite/list":
             self._json(list_cites())
+        elif path == "/api/market":
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            self._json(load_market(_clean_domain((q.get("domain") or [""])[0])))
         elif path == "/api/portal/users":
             q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             self._json(portal_users_for((q.get("project") or [""])[0]))
@@ -4884,6 +5006,9 @@ class Handler(BaseHTTPRequestHandler):
                                             payload.get("text", ""), payload.get("question", ""),
                                             "fetch" if payload.get("mode") == "fetch" else "text",
                                             str(payload.get("engine", "openrouter"))))
+            if path == "/api/market":
+                body, code = market_mentions(payload)
+                return self._json(body, code)
             if path == "/api/dataforseo/check":
                 body, code = dfs_check()
                 return self._json(body, code)
