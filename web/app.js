@@ -727,18 +727,18 @@ function renderCiteModels(){
   const dfs = (SETTINGS && SETTINGS.dataforseo) || {};
   const shown = new Set($$('.cite-model').map(c => c.value));
   box.innerHTML = list.map((m, i) => `<label><input type="checkbox" class="cite-model" value="${esc(m)}" ${(prev.size ? prev.has(m) : i < 3) ? 'checked' : ''}> ${esc(m)}</label>`).join('')
-    + (dfs.ready ? `<label><input type="checkbox" class="cite-model" value="${AIO_ID}" ${(shown.has(AIO_ID) ? prev.has(AIO_ID) : true) ? 'checked' : ''}> Google AI Overviews <span class="note" style="margin:0">via DataForSEO</span></label>`
-      : '<div class="note" style="margin:2px 0 0">Add a DataForSEO login in <a class="links" href="#/settings">Settings</a> to include Google AI Overviews.</div>');
+    + (dfs.ready ? DFS_ENGINES.map(([id, label, on]) => `<label><input type="checkbox" class="cite-model" value="${id}" ${(shown.has(id) ? prev.has(id) : on) ? 'checked' : ''}> ${label} <span class="note" style="margin:0">via DataForSEO</span></label>`).join('')
+      : '<div class="note" style="margin:2px 0 0">Add a DataForSEO login in <a class="links" href="#/settings">Settings</a> to ask the real ChatGPT and Gemini apps and include Google AI Overviews and AI Mode.</div>');
   $$('.cite-model').forEach(c => c.onchange = citeEstimate);
   citeEstimate();
 }
 function citeLines(){ return $('#citePrompts').value.split('\n').map(s => s.trim()).filter(Boolean); }
 function citeEstimate(){
-  const q = citeLines().length, sel = $$('.cite-model:checked').map(c => c.value), m = sel.length, aio = sel.includes(AIO_ID);
+  const q = citeLines().length, sel = $$('.cite-model:checked').map(c => c.value), m = sel.length, dfsN = sel.filter(isDfs).length;
   $('#citeCount').textContent = q ? `(${plural(q, 'question')}${q > citeMax() ? `; the limit is ${citeMax()}` : ''})` : '';
   $('#citeEstimate').textContent = q && m
     ? `This runs ${plural(q, 'question')} × ${plural(m, 'engine')} = ${plural(q * m, 'answer')}, about ${Math.max(1, Math.round(q * m / 6 * 25 / 60))} min. AI model answers cost the model's usage plus searches (roughly $0.005 to $0.02 per search with Exa, Parallel or Perplexity; Firecrawl costs more).`
-      + (aio ? ' Google AI Overviews cost about $0.004 per question in DataForSEO credits.' : '')
+      + (dfsN ? ` DataForSEO engines cost about $0.004 per question each: roughly $${(q * dfsN * 0.004).toFixed(2)} for this test.` : '')
       + ($('#citePositions') && $('#citePositions').checked ? ' Finding positions adds one short call per answer.' : '')
     : 'Add questions and pick models to see how many answers this will run.';
 }
@@ -761,7 +761,7 @@ async function startCite(){
   if (!$('#citeDomain').value.trim()){ $('#citeStatus').textContent = "Enter your site's domain."; return; }
   if (!prompts.length){ $('#citeStatus').textContent = 'Add at least one question.'; return; }
   if (prompts.length > citeMax()){ $('#citeStatus').textContent = `Use up to ${citeMax()} questions per test.`; return; }
-  if (!models.length || models.filter(m => m !== AIO_ID).length > 6){ $('#citeStatus').textContent = 'Pick between 1 and 6 models, plus Google AI Overviews if you like.'; return; }
+  if (!models.length || models.filter(m => !isDfs(m)).length > 6){ $('#citeStatus').textContent = 'Pick at least one engine, and up to 6 AI models plus any DataForSEO engines.'; return; }
   const loc = $('#citeLocation').value.split(',').map(s => s.trim());
   const location = loc[0] ? {city: loc[0] || '', region: loc[1] || '', country: loc[2] || ''} : null;
   $('#citeBtn').disabled = true;
@@ -1948,7 +1948,9 @@ $('#scanLimit').addEventListener('input', () => { store('abvc_scan_limit', $('#s
 
 /* ---------------------------------------------------------------- answer audit */
 const AIO_ID = 'google/ai-overviews';
-function engineLabel(m){ return m === AIO_ID ? 'Google AI Overviews' : m; }
+const DFS_ENGINES = [['chatgpt/app', 'ChatGPT (app)', true], ['gemini/app', 'Gemini (app)', true], [AIO_ID, 'Google AI Overviews', true], ['google/ai-mode', 'Google AI Mode', false]];
+const isDfs = m => DFS_ENGINES.some(e => e[0] === m);
+function engineLabel(m){ const e = DFS_ENGINES.find(x => x[0] === m); return e ? e[1] : m; }
 function citeMax(){ return (SETTINGS && SETTINGS.cite_max) || 200; }
 function entKey(s){
   return String(s || '').toLowerCase().replace(/&/g, ' and ')
@@ -1994,7 +1996,9 @@ function renderCiteAudit(){
     const top = [...counts.values()].sort((a, b) => b.qs.size - a.qs.size).slice(0, 10).map(e => [e.name, e.qs.size, false]);
     $('#citeInstead').innerHTML = bars(top.concat([[`${d.domain} (you)`, namedQ, true]]).sort((a, b) => b[1] - a[1]));
   } else {
-    $('#citeInstead').innerHTML = '<div class="note" style="margin:0">Turn on “Find where each answer places you” before the next test to see who AI names instead.</div>';
+    $('#citeInstead').innerHTML = ok.some(r => r.pos_error)
+      ? `<div class="note" style="margin:0">Positions could not be found: the helper model (${esc((SETTINGS && SETTINGS.helper_model) || 'the first model in your list')}) did not give a usable answer. Check it in Settings and run the test again.</div>`
+      : '<div class="note" style="margin:0">Turn on “Find where each answer places you” before the next test to see who AI names instead.</div>';
   }
   $('#citeByEngine').innerHTML = bars(d.models.map(m => {
     const rs = ok.filter(r => r.model === m);
