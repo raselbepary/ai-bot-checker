@@ -3449,6 +3449,7 @@ def render_portal(proj, viewer, preview=False):
 
 # ---------------------------------------------------------------- AI answer audit: Google AI Overviews, positions
 AIO_ID = "google/ai-overviews"
+DFS_ENGINES = {"chatgpt/app": "ChatGPT (app)", "gemini/app": "Gemini (app)", AIO_ID: "Google AI Overviews", "google/ai-mode": "Google AI Mode"}
 try:
     CITE_MAX_QUESTIONS = max(10, min(1000, int(os.environ.get("CITE_MAX_QUESTIONS") or 200)))
 except ValueError:
@@ -3538,19 +3539,29 @@ def _walk_dicts(obj, depth=0):
             yield from _walk_dicts(v, depth + 1)
 
 
-def ask_aio(prompt, location=None):
-    c = dfs_config()
+def _dfs_task(path, task, timeout=180):
     t0 = time.time()
-    task = {"keyword": prompt[:700], "language_code": c["language"], "device": "desktop", "load_async_ai_overview": True,
-            "location_name": (location or c["location"] or "United States").strip()}
-    body, err = _dfs_request("/v3/serp/google/organic/live/advanced", [task], timeout=180)
+    body, err = _dfs_request(path, [task], timeout=timeout)
     ms = int((time.time() - t0) * 1000)
     if err:
-        return {"error": err, "ms": ms}
+        return None, {"error": err, "ms": ms}, ms
     t = (body.get("tasks") or [{}])[0] or {}
     if t.get("status_code") != 20000:
-        return {"error": f"DataForSEO: {t.get('status_message') or 'task failed'}"[:300], "ms": ms}
-    res = (t.get("result") or [{}])[0] or {}
+        return None, {"error": f"DataForSEO: {t.get('status_message') or 'task failed'}"[:300], "ms": ms}, ms
+    return (t.get("result") or [{}])[0] or {}, None, ms
+
+
+def _cites_from(obj):
+    cites, seen = [], set()
+    for d in _walk_dicts(obj):
+        u = d.get("url")
+        if isinstance(u, str) and u.startswith(("http://", "https://")) and u not in seen:
+            seen.add(u)
+            cites.append({"url": u, "title": str(d.get("title") or d.get("source") or d.get("source_name") or "")[:200]})
+    return cites[:40]
+
+
+def _from_ai_overview(res, ms):
     aio = next((i for i in (res.get("items") or []) if isinstance(i, dict) and i.get("type") == "ai_overview"), None)
     if not aio:
         return {"no_answer": True, "answer": "", "citations": [], "text_links": [], "searches": 1, "ms": ms}
@@ -3561,13 +3572,53 @@ def ask_aio(prompt, location=None):
             if isinstance(el, dict):
                 parts += [str(el[k]) for k in ("title", "text") if el.get(k)]
         text = "\n".join(parts)
-    cites, seen = [], set()
-    for d in _walk_dicts(aio):
-        u = d.get("url")
-        if isinstance(u, str) and u.startswith(("http://", "https://")) and u not in seen:
-            seen.add(u)
-            cites.append({"url": u, "title": str(d.get("title") or d.get("source") or "")[:200]})
-    return {"answer": text[:8000], "citations": cites[:40], "text_links": [], "searches": 1, "tokens": None, "ms": ms}
+    return {"answer": text[:8000], "citations": _cites_from(aio), "text_links": [], "searches": 1, "tokens": None, "ms": ms}
+
+
+def ask_aio(prompt, location=None):
+    c = dfs_config()
+    task = {"keyword": prompt[:700], "language_code": c["language"], "device": "desktop", "load_async_ai_overview": True,
+            "location_name": (location or c["location"] or "United States").strip()}
+    res, err, ms = _dfs_task("/v3/serp/google/organic/live/advanced", task)
+    return err if err else _from_ai_overview(res, ms)
+
+
+def ask_ai_mode(prompt, location=None):
+    c = dfs_config()
+    task = {"keyword": prompt[:700], "language_code": c["language"], "device": "desktop",
+            "location_name": (location or c["location"] or "United States").strip()}
+    res, err, ms = _dfs_task("/v3/serp/google/ai_mode/live/advanced", task)
+    return err if err else _from_ai_overview(res, ms)
+
+
+LLM_APP_PATHS = {"chatgpt/app": "/v3/ai_optimization/chat_gpt/llm_scraper/live/advanced",
+                 "gemini/app": "/v3/ai_optimization/gemini/llm_scraper/live/advanced"}
+
+
+def ask_llm_app(engine, prompt, location=None):
+    c = dfs_config()
+    # the app scrapers take a country, so a city location falls back to its country
+    country = (location or c["location"] or "United States").split(",")[-1].strip() or "United States"
+    task = {"keyword": prompt[:2000], "language_code": c["language"], "location_name": country}
+    if engine == "chatgpt/app":
+        task["force_web_search"] = True
+    res, err, ms = _dfs_task(LLM_APP_PATHS[engine], task)
+    if err:
+        return err
+    items = [i for i in (res.get("items") or []) if isinstance(i, dict)]
+    text = res.get("markdown") or "\n\n".join(str(i["markdown"]) for i in items if i.get("markdown"))
+    if not str(text).strip():
+        return {"error": "The app returned an empty answer.", "ms": ms}
+    cites = _cites_from(res.get("sources")) or _cites_from([i.get("sources") for i in items])
+    return {"answer": str(text)[:8000], "citations": cites, "text_links": [], "searches": 1 if cites else 0, "tokens": None, "ms": ms}
+
+
+def ask_dfs(engine, prompt, location=None):
+    if engine == AIO_ID:
+        return ask_aio(prompt, location)
+    if engine == "google/ai-mode":
+        return ask_ai_mode(prompt, location)
+    return ask_llm_app(engine, prompt, location)
 
 
 def _ent_key(s):
@@ -3620,7 +3671,7 @@ def _audit_html(j):
     if not ok or not any("entities" in r for r in ok):
         return ""
     models = j.get("models") or []
-    label = lambda m: "Google AI Overviews" if m == AIO_ID else m
+    label = lambda m: DFS_ENGINES.get(m, m)
     brand = {"names": j.get("brands") or [], "domain": j.get("domain", "")}
     byq = {}
     for r in ok:
@@ -3846,8 +3897,8 @@ def _run_cite(job):
 
     def one(task):
         prompt, model = task
-        if model == AIO_ID:
-            r = ask_aio(prompt, job.get("aio_location"))
+        if model in DFS_ENGINES:
+            r = ask_dfs(model, prompt, job.get("aio_location"))
         else:
             r = ask_search(job["key"], model, prompt, job["engine"], job["location"])
         r.update({"prompt": prompt, "model": model})
@@ -3872,8 +3923,10 @@ def _run_cite(job):
                         cr["pos"] = entity_pos(c, names)
                         if cr["pos"]:
                             cr["mentioned"] = True
+                else:
+                    r["pos_error"] = True
             if job.get("sentiment") and r["brand"]["mentioned"] and job["key"]:
-                r["sentiment"], r["sentiment_reason"] = rate_sentiment(job["key"], job["helper"] if model == AIO_ID else model,
+                r["sentiment"], r["sentiment_reason"] = rate_sentiment(job["key"], job["helper"] if model in DFS_ENGINES else model,
                                                                       job["brands"] or [job["domain"]], job["domain"], r["answer"])
         return r
 
@@ -3926,7 +3979,7 @@ def _str_list(v, max_items, max_len):
 
 def start_cite(p):
     key = openrouter_key(p.get("key"))
-    only_aio = [str(m) for m in (p.get("models") or [])] == [AIO_ID] and not p.get("positions", True)
+    only_aio = bool(p.get("models")) and all(str(m) in DFS_ENGINES for m in p.get("models")) and not p.get("positions", True)
     if not key and not only_aio:
         return {"error": "No OpenRouter API key. Save one in Settings first."}, 400
     domain = _clean_domain(str(p.get("domain", "")))
@@ -3937,9 +3990,11 @@ def start_cite(p):
         return {"error": f"Use up to {CITE_MAX_QUESTIONS} questions per test."}, 400
     if not prompts:
         return {"error": "Add at least one question."}, 400
-    models = _str_list(p.get("models"), 7, 200)
-    if AIO_ID in models and not dfs_public()["ready"]:
-        return {"error": "Google AI Overviews needs a DataForSEO login. Add it in Settings."}, 400
+    models = _str_list(p.get("models"), 10, 200)
+    if any(m in DFS_ENGINES for m in models) and not dfs_public()["ready"]:
+        return {"error": "The ChatGPT and Gemini apps and the Google engines need a DataForSEO login. Add it in Settings."}, 400
+    if sum(1 for m in models if m not in DFS_ENGINES) > 6:
+        return {"error": "Pick up to 6 AI models, plus any DataForSEO engines."}, 400
     if not models:
         return {"error": "Pick at least one model."}, 400
     engine = p.get("engine") if p.get("engine") in SEARCH_ENGINES else "auto"
