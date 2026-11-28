@@ -663,6 +663,35 @@
             </div>
           </div>
         </section>
+        <section class="panel hidden" id="citeRivalPanel">
+          <div class="row" style="justify-content:space-between">
+            <h2 style="margin:0">Competitor research</h2>
+            <div class="row" style="gap:8px"><label for="rivalSel" class="note" style="margin:0">Compare with</label><select id="rivalSel" style="width:auto;max-width:320px"></select></div>
+          </div>
+          <div class="auditkpis" id="rivalKpis" style="margin-top:14px"></div>
+          <div class="grid2" style="margin-top:6px">
+            <div>
+              <div class="subhead">Questions they win and you don't</div>
+              <div class="note" style="margin:0 0 8px">Named on at least one engine while no engine names you. Each is a candidate for a page that answers it directly.</div>
+              <ul class="gaplist rivlist" id="rivalGaps"></ul>
+            </div>
+            <div>
+              <div class="subhead">Their pages AI cites</div>
+              <div class="note" style="margin:0 0 8px">Pages on their site that answers used as sources.</div>
+              <ul class="gaplist rivlist" id="rivalPages"></ul>
+              <div class="subhead">Your pages AI cites</div>
+              <ul class="gaplist rivlist" id="rivalMine"></ul>
+            </div>
+          </div>
+          <div class="subhead">Engine by engine</div>
+          <div class="tablewrap"><table id="rivalEngines"></table></div>
+          <div class="subhead">Over time</div>
+          <div id="rivalTrend"></div>
+          <div class="subhead">Market view <span class="note" style="margin:0;font-weight:400">DataForSEO LLM Mentions</span></div>
+          <p class="hint" style="margin-bottom:8px">How often each brand is mentioned across DataForSEO's database of real Google AI Overview and ChatGPT answers, not only your test questions. Uses your brand and up to 9 competitors; about $0.20 per check. Short or generic brand names can match unrelated answers.</p>
+          <div class="row"><button class="ghost" id="marketBtn">Check market mentions</button><span class="note" style="margin:0" id="marketNote"></span></div>
+          <div id="marketOut" style="margin-top:10px"></div>
+        </section>
         <section class="panel">
           <div class="row" style="justify-content:space-between">
             <h2 style="margin:0">Results by question and model</h2>
