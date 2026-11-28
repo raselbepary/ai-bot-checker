@@ -888,6 +888,7 @@ function renderCite(){
   }).join('');
   renderCiteInsights();
   renderCiteAudit();
+  renderRivals();
   renderTrend();
 }
 
@@ -915,7 +916,7 @@ async function loadCiteHistory(){
     const d = await api('/api/cite/list');
     const cur = CITE ? CITE.id : '';
     const items = (d.runs || []).filter(s => belongsToProject(s.domain));
-    CITE_RUNS = items; renderTrend();
+    CITE_RUNS = items; renderTrend(); if (CITE) renderRivals();
     $('#citeHistory').innerHTML = (items.length ? '<option value="">Choose a test…</option>' : '<option value="">None yet</option>') + items.map(s =>
       `<option value="${esc(s.id)}" ${s.id === cur ? 'selected' : ''}>${esc(s.domain)}, ${esc((s.started_at || '').slice(0, 16))}, ${s.done} of ${s.total}${s.status === 'running' ? ' (running)' : ''}</option>`).join('');
   }catch(e){}
@@ -2029,6 +2030,150 @@ $('#testDfs').onclick = async () => {
     $('#dfsNote').textContent = d.error ? d.error : `Connected.${d.balance !== null && d.balance !== undefined ? ` Balance: $${Number(d.balance).toFixed(2)}.` : ''}`;
   }catch(e){ $('#dfsNote').textContent = 'Could not check: ' + e.message; }
   finally{ $('#testDfs').disabled = false; }
+};
+
+/* ---------------------------------------------------------------- competitor research */
+let RIVAL_KEY = '';
+const MARKET = {}, MARKET_ASKED = {};
+function keysMatch(a, b){ return !!a && !!b && (a === b || (Math.min(a.length, b.length) >= 4 && (a.includes(b) || b.includes(a)))); }
+function rvHost(u){ try{ return new URL(u).hostname.replace(/^www\./, ''); }catch(e){ return ''; } }
+function rivalList(d){
+  const ok = d.results.filter(r => !r.error && !r.no_answer);
+  const list = [];
+  ((ok.find(r => r.competitors) || {}).competitors || []).forEach((c, i) => {
+    const name = c.label.split(' (')[0];
+    list.push({name, key: entKey(name), domain: (c.domain || '').replace(/^www\./, ''), idx: i});
+  });
+  const counts = new Map();
+  ok.forEach(r => (r.entities || []).forEach(n => {
+    if (isBrandName(n, d)) return;
+    const k = entKey(n); if (!k) return;
+    const e = counts.get(k) || {name: n, qs: new Set()}; e.qs.add(r.prompt); counts.set(k, e);
+  }));
+  [...counts.entries()].sort((a, b) => b[1].qs.size - a[1].qs.size).slice(0, 10).forEach(([k, e]) => {
+    if (!list.some(x => keysMatch(x.key, k))) list.push({name: e.name, key: k, domain: '', idx: -1});
+  });
+  const hosts = new Set();
+  ok.forEach(r => (r.citations || []).forEach(c => { const h = rvHost(c.url); if (h) hosts.add(h); }));
+  list.forEach(x => {
+    if (x.domain) return;
+    const flat = x.key.replace(/ /g, '');
+    if (flat.length < 5) return;
+    const h = [...hosts].find(h => { const stem = h.split('.')[0].replace(/-/g, ''); return stem.length >= 5 && (stem.includes(flat) || flat.includes(stem)); });
+    if (h) x.domain = h;
+  });
+  return list;
+}
+function rivalHit(r, rv){
+  if (rv.idx >= 0){ const c = (r.competitors || [])[rv.idx] || {}; return {named: !!c.mentioned, pos: c.pos || null}; }
+  const i = (r.entities || []).findIndex(n => keysMatch(entKey(n), rv.key));
+  if (i >= 0) return {named: true, pos: i + 1};
+  return {named: (r.answer || '').toLowerCase().includes(rv.name.toLowerCase()), pos: null};
+}
+function citedPages(ok, domain){
+  if (!domain) return [];
+  const m = new Map();
+  ok.forEach(r => (r.citations || []).forEach(c => {
+    const h = rvHost(c.url);
+    if (!h || !(h === domain || h.endsWith('.' + domain))) return;
+    const u = c.url.replace(/[?#].*$/, '');
+    const e = m.get(u) || {url: u, title: c.title || '', answers: 0, qs: new Set()};
+    e.answers++; e.qs.add(r.prompt); m.set(u, e);
+  }));
+  return [...m.values()].sort((a, b) => b.answers - a.answers);
+}
+function pagesHtml(pages, who){
+  if (!pages.length) return `<li class="note" style="margin:0">No pages from ${esc(who)} were cited in this test.</li>`;
+  return pages.slice(0, 20).map(p => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.url.replace(/^https?:\/\/(www\.)?/, ''))}</a>
+    <span class="where">Cited in ${plural(p.answers, 'answer')} for ${plural(p.qs.size, 'question')}${p.title ? ` · ${esc(p.title)}` : ''}</span></li>`).join('');
+}
+function renderRivals(){
+  const d = CITE; if (!d) return;
+  const ok = d.results.filter(r => !r.error && !r.no_answer);
+  const list = rivalList(d);
+  $('#citeRivalPanel').classList.toggle('hidden', !ok.length || !list.length);
+  if (!ok.length || !list.length) return;
+  if (!list.some(x => x.key === RIVAL_KEY)) RIVAL_KEY = list[0].key;
+  $('#rivalSel').innerHTML = list.map(x => `<option value="${esc(x.key)}" ${x.key === RIVAL_KEY ? 'selected' : ''}>${esc(x.name)}${x.idx >= 0 ? '' : ' (found in answers)'}</option>`).join('');
+  const rv = list.find(x => x.key === RIVAL_KEY);
+  const byq = new Map();
+  ok.forEach(r => { if (!byq.has(r.prompt)) byq.set(r.prompt, []); byq.get(r.prompt).push(r); });
+  let both = 0, onlyThem = 0, onlyYou = 0;
+  const gaps = [];
+  byq.forEach((rs, q) => {
+    const you = rs.some(r => r.brand.mentioned);
+    const hits = rs.map(r => [r, rivalHit(r, rv)]).filter(h => h[1].named);
+    if (you && hits.length) both++;
+    else if (hits.length){ onlyThem++; gaps.push({q, hits}); }
+    else if (you) onlyYou++;
+  });
+  const kpi = (big, small) => `<div class="akpi"><b>${esc(big)}</b><span>${esc(small)}</span></div>`;
+  $('#rivalKpis').innerHTML = kpi(String(onlyThem), `questions where ${rv.name} is named and you are not`)
+    + kpi(String(both), 'questions where you are both named') + kpi(String(onlyYou), `questions where you are named and ${rv.name} is not`);
+  gaps.sort((a, b) => b.hits.length - a.hits.length);
+  $('#rivalGaps').innerHTML = gaps.length ? gaps.slice(0, 60).map(g => `<li><strong>${esc(g.q)}</strong>
+    <span class="where">${g.hits.map(([r, h]) => `${esc(engineLabel(r.model))}${h.pos ? ` #${h.pos}` : ''}`).join(' · ')}</span></li>`).join('')
+    + (gaps.length > 60 ? `<li class="note" style="margin:0">And ${gaps.length - 60} more.</li>` : '')
+    : `<li class="note" style="margin:0">None. Wherever ${esc(rv.name)} is named, you are too.</li>`;
+  $('#rivalPages').innerHTML = rv.domain ? pagesHtml(citedPages(ok, rv.domain), rv.domain)
+    : `<li class="note" style="margin:0">Their website isn't known. Add them to the competitors as “Name (domain.com)” to see their cited pages.</li>`;
+  $('#rivalMine').innerHTML = pagesHtml(citedPages(ok, (d.domain || '').replace(/^www\./, '')), d.domain);
+  const avg = xs => xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(1) : '–';
+  $('#rivalEngines').innerHTML = `<thead><tr><th>Engine</th><th>You named</th><th>Your average position</th><th>${esc(rv.name)} named</th><th>Their average position</th></tr></thead><tbody>${
+    d.models.map(m => {
+      const rs = ok.filter(r => r.model === m);
+      const th = rs.map(r => rivalHit(r, rv));
+      return `<tr><td>${esc(engineLabel(m))}</td><td class="num">${rs.filter(r => r.brand.mentioned).length} of ${rs.length}</td>
+        <td class="num">${avg(rs.filter(r => r.brand.pos).map(r => r.brand.pos))}</td>
+        <td class="num">${th.filter(h => h.named).length} of ${rs.length}</td><td class="num">${avg(th.filter(h => h.pos).map(h => h.pos))}</td></tr>`;
+    }).join('')}</tbody>`;
+  const runs = CITE_RUNS.filter(s => s.domain === d.domain && s.rivals && s.rivals.questions).sort((a, b) => (a.started_at || '').localeCompare(b.started_at || '')).slice(-12);
+  $('#rivalTrend').innerHTML = runs.length < 2
+    ? '<div class="note" style="margin:0">Run this test again later to see how you and each competitor change over time.</div>'
+    : `<div class="tablewrap"><table><thead><tr><th>Test</th><th>Questions</th><th>You named on</th><th>${esc(rv.name)} named on</th></tr></thead><tbody>${
+      runs.map(s => {
+        const e = Object.entries(s.rivals.rivals || {}).find(([k]) => keysMatch(k, rv.key));
+        return `<tr${s.id === d.id ? ' style="font-weight:600"' : ''}><td class="num">${esc((s.started_at || '').slice(0, 16))}</td><td class="num">${s.rivals.questions}</td>
+          <td class="num">${s.rivals.you}</td><td class="num">${e ? e[1].q : '–'}</td></tr>`;
+      }).join('')}</tbody></table></div>`;
+  if (MARKET[d.domain]) renderMarket(MARKET[d.domain]);
+  else {
+    $('#marketOut').innerHTML = ''; $('#marketNote').textContent = '';
+    if (!MARKET_ASKED[d.domain]){
+      MARKET_ASKED[d.domain] = true;
+      api('/api/market?domain=' + encodeURIComponent(d.domain)).then(m => { if (m && m.platforms){ MARKET[d.domain] = m; if (CITE && CITE.domain === d.domain) renderMarket(m); } }).catch(() => {});
+    }
+  }
+}
+function renderMarket(m){
+  const plats = m.platforms || [];
+  const head = plats.map(p => `<th>${esc(p.label)} mentions</th><th>AI search volume</th>`).join('');
+  const rows = (m.brands || []).map((b, i) => `<tr${i === 0 ? ' style="font-weight:600"' : ''}><td>${esc(b)}${i === 0 ? ' (you)' : ''}</td>${plats.map(p => {
+    if (p.error) return '<td colspan="2" class="note">–</td>';
+    const it = (p.items || {})[b] || {mentions: 0, volume: 0};
+    return `<td class="num">${it.mentions.toLocaleString()}</td><td class="num">${it.volume.toLocaleString()}</td>`;
+  }).join('')}</tr>`).join('');
+  const lists = plats.filter(p => !p.error).map(p => `<div><div class="subhead">${esc(p.label)}: most-cited domains</div><ul class="gaplist rivlist">${
+      (p.sources || []).map(x => `<li>${esc(x.key)} <span class="where">${Number(x.mentions || 0).toLocaleString()} mentions</span></li>`).join('') || '<li class="note" style="margin:0">None found.</li>'}</ul>
+    <div class="subhead">${esc(p.label)}: brands often mentioned</div><ul class="gaplist rivlist">${
+      (p.brands || []).map(x => `<li>${esc(x.key)} <span class="where">${Number(x.mentions || 0).toLocaleString()} mentions</span></li>`).join('') || '<li class="note" style="margin:0">None found.</li>'}</ul></div>`).join('');
+  const errs = plats.filter(p => p.error).map(p => `<div class="note">${esc(p.label)}: ${esc(p.error)}</div>`).join('');
+  $('#marketOut').innerHTML = `<div class="tablewrap"><table><thead><tr><th>Brand</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>${errs}
+    <div class="grid2" style="margin-top:6px">${lists}</div>`;
+  $('#marketNote').textContent = `Checked ${(m.checked_at || '').slice(0, 16)} for ${m.location || 'United States'}${m.cost ? `, cost about $${Number(m.cost).toFixed(2)}` : ''}.`;
+}
+$('#rivalSel').onchange = () => { RIVAL_KEY = $('#rivalSel').value; renderRivals(); };
+$('#marketBtn').onclick = async () => {
+  const d = CITE; if (!d) return;
+  const names = [(d.brands && d.brands[0]) || d.domain].concat(rivalList(d).map(x => x.name)).slice(0, 10);
+  if (names.length < 2){ $('#marketNote').textContent = 'Add at least one competitor first.'; return; }
+  $('#marketBtn').disabled = true; $('#marketNote').textContent = 'Checking DataForSEO, about a minute…';
+  try{
+    const m = await post('/api/market', {domain: d.domain, brands: names});
+    if (m.error){ $('#marketNote').textContent = m.error; return; }
+    MARKET[d.domain] = m; renderMarket(m);
+  }catch(e){ $('#marketNote').textContent = 'Could not check: ' + e.message; }
+  finally{ $('#marketBtn').disabled = false; }
 };
 
 /* ---------------------------------------------------------------- start */
