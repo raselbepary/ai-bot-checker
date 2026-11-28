@@ -316,6 +316,11 @@ code{font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;backgrou
 .barlist .br.me .bt i{background:var(--brand);opacity:1}
 .barlist .br b{text-align:right;font-variant-numeric:tabular-nums}
 
+/* ---------------------------------------------------------------- competitor research */
+.rivlist{max-height:380px}
+.rivlist li .where{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+.rivlist li a{word-break:break-all}
+
 /* ---------------------------------------------------------------- report options */
 .secpick label{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-soft);font-size:14px;cursor:pointer}
 .secpick label:last-child{border-bottom:0}
